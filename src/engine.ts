@@ -995,11 +995,35 @@ function historyFormulaTerm(letterScore: TurnWordScoreState['letters'][number]):
 }
 
 function historyWordBonusNote(wordScore: TurnWordScoreState): string {
-  if (wordScore.wordBonuses.length === 0) return '';
-  const bonuses = wordScore.wordBonuses.map((bonus) => (
-    `word bonus on ${letterAtPosition(wordScore, bonus.col, bonus.row)}`
-  ));
-  return `word bonus: ${bonuses.join(', ')}`;
+  const notes: string[] = [];
+
+  if (wordScore.wordBonuses.length > 0) {
+    const bonusLetters = wordScore.wordBonuses.map((bonus) => (
+      letterAtPosition(wordScore, bonus.col, bonus.row)
+    ));
+    notes.push(`word bonus on ${bonusLetters.join(', ')}`);
+  }
+
+  const doubleLetterBonuses = historyLetterBonusNotes(wordScore, 'double-letter');
+  if (doubleLetterBonuses.length > 0) {
+    notes.push(`double letter on ${doubleLetterBonuses.join(', ')}`);
+  }
+
+  const tripleLetterBonuses = historyLetterBonusNotes(wordScore, 'triple-letter');
+  if (tripleLetterBonuses.length > 0) {
+    notes.push(`triple letter on ${tripleLetterBonuses.join(', ')}`);
+  }
+
+  return notes.join('; ');
+}
+
+function historyLetterBonusNotes(
+  wordScore: TurnWordScoreState,
+  premium: 'double-letter' | 'triple-letter',
+): string[] {
+  return wordScore.letters
+    .filter((letterScore) => letterScore.isNewTile && letterScore.premium === premium)
+    .map((letterScore) => `"${letterScore.letter}"`);
 }
 
 function letterAtPosition(wordScore: TurnWordScoreState, col: number, row: number): string {
