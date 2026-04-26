@@ -32,7 +32,6 @@ export function makeDraggable(tile: Tile, hand: Hand, board: Board) {
     originRow: number;
   } | null = null;
 
-  let pendingCleanup : (() => void) | null = null;
   const ac = new AbortController();
 
   const restoreToOrigin = () => {
@@ -51,9 +50,6 @@ export function makeDraggable(tile: Tile, hand: Hand, board: Board) {
   };
 
   el.addEventListener('pointerdown', (e) => {
-    pendingCleanup?.();
-    pendingCleanup = null;
-
     const rect = el.getBoundingClientRect();
     drag = {
       pointerId: e.pointerId,
@@ -71,7 +67,7 @@ export function makeDraggable(tile: Tile, hand: Hand, board: Board) {
     el.style.top  = rect.top  + 'px';
     el.classList.add('dragging');
 
-    tile.tileHolder.removeTile(tile);
+    drag.origin.removeTile(tile);
 
     el.setPointerCapture(e.pointerId);
     el.style.cursor = 'grabbing';
@@ -110,43 +106,12 @@ export function makeDraggable(tile: Tile, hand: Hand, board: Board) {
       tile.row = drag.originRow;
       finalTileHolder.addTile(tile);
     }
-    tile.tileHolder = finalTileHolder;
 
     const snappedCoords = gridCoordsToTileHolderCoords(tile.col, tile.row, finalTileHolder);
-
-    // animate in viewport space, then reparent on transitionend
-    const finalRect = finalTileHolder.el.getBoundingClientRect();
-    const targetX = finalRect.left + snappedCoords.x;
-    const targetY = finalRect.top  + snappedCoords.y;
-    const noMove = parseFloat(el.style.left) === targetX && parseFloat(el.style.top) === targetY;
-
-    const cleanup = () => {
-      el.classList.remove('snapping');
-      finalTileHolder.el.appendChild(el);
-      el.style.position = '';
-      el.style.left = snappedCoords.x + 'px';
-      el.style.top  = snappedCoords.y + 'px';
-      pendingCleanup = null;
-    };
-
-    if (noMove) {
-      cleanup();
-    } else {
-      el.classList.add('snapping');
-      el.style.left = targetX + 'px';
-      el.style.top  = targetY + 'px';
-      pendingCleanup = cleanup;
-      el.addEventListener('transitionend', () => {
-        if (pendingCleanup === cleanup) cleanup();
-      }, { once: true });
-    }
-
-    /*
-    console.log('Tile added to', finalTileHolder === board ? 'board' : 'hand');
-    if (finalTileHolder === board) {
-      console.log(tile.row, tile.col, tile.handRow, tile.handCol)
-    }
-    */
+    finalTileHolder.el.appendChild(el);
+    el.style.position = '';
+    el.style.left = snappedCoords.x + 'px';
+    el.style.top  = snappedCoords.y + 'px';
 
     drag = null;
     el.classList.remove('dragging');

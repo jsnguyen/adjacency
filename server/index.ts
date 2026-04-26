@@ -329,7 +329,6 @@ function handleMessage(socket: LiveSocket, msg: ClientMessage): void {
       if (reason) {
         rejectTurn(socket, room, reason);
       } else {
-        send(socket, { type: 'board_is_valid', boardIsValid: true });
         room.broadcastState();
       }
       break;

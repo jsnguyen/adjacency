@@ -83,7 +83,7 @@ app.appendChild(bottomBar);
 let hand = new Hand(bottomBar);
 
 const buttonLabels = ['recall', 'shuffle', 'exchange', 'pass', 'play'];
-new Actions(buttonLabels.length, 'full', bottomBar, buttonLabels);
+new Actions(bottomBar, buttonLabels);
 
 shuffleButton = document.getElementById('shuffle-button') as HTMLButtonElement | null;
 if (shuffleButton) {
@@ -228,7 +228,6 @@ function updateStatusFromState(state: GameState, player: PlayerPublicState | nul
   } else {
     moveBar.textContent = `First word must cross ${state.rules.centerCol},${state.rules.centerRow}.`;
   }
-  flashElement(moveBar, 'move-bar--pulse');
 }
 
 function updateActionButtons(): void {
@@ -320,7 +319,6 @@ function connectSocket(): void {
 
   socket.addEventListener('open', () => {
     reconnectAttempts = 0;
-    console.log('Connected to server');
     setStatus('Connected. Waiting for room state.');
     updateActionButtons();
   });
@@ -346,11 +344,8 @@ function connectSocket(): void {
       setStatus('Received an unreadable server message.', 'error');
       return;
     }
-    console.log(msg);
-
     switch (msg.type) {
       case 'player_id':
-        console.log(`Assigned player id: ${msg.playerId}`)
         setPlayerId(msg.playerId);
         break;
       case 'game_state':
@@ -361,11 +356,6 @@ function connectSocket(): void {
         waitingForServer = false;
         setStatus(msg.reason, 'error');
         updateActionButtons();
-        break;
-      case 'board_is_valid':
-        break;
-      case 'room_created':
-        setStatus(`Created room ${msg.roomId}.`);
         break;
       case 'error':
         waitingForServer = false;

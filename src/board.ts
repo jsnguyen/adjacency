@@ -54,7 +54,6 @@ export class Board {
     for (const t of [...this.tiles]) {
       if (!t.isPlayed) {
         if (t.handCol === null || t.handRow === null) {
-          console.log("Recall failed due to null hand col/row")
           continue;
         }
         const c = gridCoordsToTileHolderCoords(t.handCol, t.handRow, hand);
@@ -68,15 +67,6 @@ export class Board {
         }
       }
     }
-  }
-
-  setAllPlayed() {
-    this.tiles.forEach(t => {
-      if (!t.isPlayed) {
-        t.isPlayed = true
-        t.disableDrag?.();
-      }
-    });
   }
 
   getBoardState(): TileHolderState  {

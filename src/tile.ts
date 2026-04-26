@@ -42,7 +42,7 @@ export class Tile {
     this.letter = null;
     this.value = null;
 
-    var tileDiv = document.createElement('div');
+    const tileDiv = document.createElement('div');
     if (isBGTile) {
       tileDiv.classList.add('tile');
       tileDiv.classList.add('bg-tile');

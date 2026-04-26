@@ -2,12 +2,6 @@ import { GRID, TILE_SIZE } from './constants.ts'
 import type { TileHolderState } from '../shared/states.ts'
 import { gridCoordsToTileHolderCoords } from './coordinates.ts'
 import { Tile } from './tile.ts'
-import type { Letter } from '../shared/letters.ts';
-
-function randomLetter() {
-  const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-  return letters[Math.floor(Math.random() * letters.length)] as Letter;
-}
 
 export class Hand {
   grid: Record<string, number>;
@@ -16,7 +10,7 @@ export class Hand {
   tiles: Tile[];
   el: HTMLElement;
 
-  constructor(parent : HTMLElement, size = 7, dealRandomTiles = false) {
+  constructor(parent : HTMLElement, size = 7) {
     this.grid = { cols: size, rows: 1, pad: GRID.pad };
     this.cols = size;
     this.rows = 1;
@@ -29,22 +23,6 @@ export class Hand {
     this.el = hand;
     parent.appendChild(this.el);
 
-    if (dealRandomTiles) {
-      this.randomHand(size);
-    }
-
-  }
-
-  randomHand(size : number) {
-    for (let i = 0; i < size; i++) {
-      const tile = new Tile(i, 0, this);
-      tile.setLetter(randomLetter())
-      tile.row = 0;
-      tile.col = i;
-      tile.handRow = tile.row;
-      tile.handCol = tile.col;
-      this.addTile(tile);
-    }
   }
 
   spaceIsEmpty(tile : Tile) {
