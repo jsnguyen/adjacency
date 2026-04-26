@@ -687,6 +687,10 @@ function buildWordScores(words: MovePreviewState['words']): TurnWordScoreState[]
     kind: word.kind,
     word: word.word,
     score: word.score,
+    letters: word.letters,
+    letterSubtotal: word.letterSubtotal,
+    wordMultiplier: word.wordMultiplier,
+    wordBonuses: word.wordBonuses,
   }));
 }
 

@@ -5,6 +5,7 @@ import type {
   MovePreviewState,
   PlayerPublicState,
   TileState,
+  TurnWordScoreState,
   TurnHistoryEntryState,
   WordBuildKind,
 } from '../shared/states.ts'
@@ -878,6 +879,9 @@ function renderTurnHistory(entries: TurnHistoryEntryState[]): void {
       for (const wordScore of entry.words) {
         const row = document.createElement('div');
         row.classList.add('history-entry__word');
+        row.tabIndex = 0;
+        row.classList.add('history-entry__word--interactive');
+        row.title = historyWordBreakdownText(wordScore);
 
         const wordMeta = document.createElement('div');
         wordMeta.classList.add('history-entry__word-meta');
@@ -896,6 +900,7 @@ function renderTurnHistory(entries: TurnHistoryEntryState[]): void {
 
         wordMeta.append(word, kind);
         row.append(wordMeta, score);
+        row.appendChild(renderHistoryWordBreakdown(wordScore));
         wordRows.appendChild(row);
       }
 
@@ -922,6 +927,120 @@ function wordKindLabel(kind: WordBuildKind): string {
     case 'fresh':
       return 'fresh';
   }
+}
+
+function renderHistoryWordBreakdown(wordScore: TurnWordScoreState): HTMLDivElement {
+  const breakdown = document.createElement('div');
+  breakdown.classList.add('history-word-breakdown');
+
+  const title = document.createElement('div');
+  title.classList.add('history-word-breakdown__title');
+  title.textContent = `${wordScore.word} breakdown`;
+  breakdown.appendChild(title);
+
+  const letters = document.createElement('div');
+  letters.classList.add('history-word-breakdown__section');
+
+  for (const letterScore of wordScore.letters) {
+    const row = document.createElement('div');
+    row.classList.add('history-word-breakdown__row');
+
+    const label = document.createElement('span');
+    label.classList.add('history-word-breakdown__label');
+    label.textContent = `${letterScore.letter} @ ${formatCellPosition(letterScore.col, letterScore.row)}`;
+
+    const value = document.createElement('span');
+    value.classList.add('history-word-breakdown__value');
+    value.textContent = `${letterScore.tileScore} pt${letterScore.tileScore === 1 ? '' : 's'}`;
+
+    const meta = document.createElement('div');
+    meta.classList.add('history-word-breakdown__meta');
+    meta.textContent = historyLetterMeta(letterScore);
+
+    row.append(label, value, meta);
+    letters.appendChild(row);
+  }
+
+  breakdown.appendChild(letters);
+
+  const summary = document.createElement('div');
+  summary.classList.add('history-word-breakdown__summary');
+  const wordBonusLabel = wordScore.wordMultiplier > 1
+    ? `x${wordScore.wordMultiplier} word`
+    : 'no word bonus';
+  summary.textContent = `${wordScore.letterSubtotal} letter subtotal · ${wordBonusLabel} · ${wordScore.score} total`;
+  breakdown.appendChild(summary);
+
+  const bonusSection = document.createElement('div');
+  bonusSection.classList.add('history-word-breakdown__section');
+
+  if (wordScore.wordBonuses.length === 0) {
+    const bonusRow = document.createElement('div');
+    bonusRow.classList.add('history-word-breakdown__row');
+    const bonusLabel = document.createElement('span');
+    bonusLabel.classList.add('history-word-breakdown__label');
+    bonusLabel.textContent = 'Word bonus';
+    const bonusValue = document.createElement('span');
+    bonusValue.classList.add('history-word-breakdown__value');
+    bonusValue.textContent = 'none';
+    bonusRow.append(bonusLabel, bonusValue);
+    bonusSection.appendChild(bonusRow);
+  } else {
+    for (const bonus of wordScore.wordBonuses) {
+      const bonusRow = document.createElement('div');
+      bonusRow.classList.add('history-word-breakdown__row');
+
+      const bonusLabel = document.createElement('span');
+      bonusLabel.classList.add('history-word-breakdown__label');
+      bonusLabel.textContent = `${premiumSquareLabel(bonus.premium)} @ ${formatCellPosition(bonus.col, bonus.row)}`;
+
+      const bonusValue = document.createElement('span');
+      bonusValue.classList.add('history-word-breakdown__value');
+      bonusValue.textContent = `x${bonus.multiplier}`;
+
+      bonusRow.append(bonusLabel, bonusValue);
+      bonusSection.appendChild(bonusRow);
+    }
+  }
+
+  breakdown.appendChild(bonusSection);
+  return breakdown;
+}
+
+function historyLetterMeta(letterScore: TurnWordScoreState['letters'][number]): string {
+  const parts = [`base ${letterScore.baseScore}`];
+  if (!letterScore.isNewTile) {
+    parts.push('existing tile');
+    return parts.join(' · ');
+  }
+  if (letterScore.appliedMultiplier > 1) {
+    parts.push(`${premiumSquareLabel(letterScore.premium)} x${letterScore.appliedMultiplier}`);
+  } else {
+    parts.push('no tile bonus');
+  }
+  return parts.join(' · ');
+}
+
+function historyWordBreakdownText(wordScore: TurnWordScoreState): string {
+  const letterLines = wordScore.letters.map((letterScore) => (
+    `${letterScore.letter} @ ${formatCellPosition(letterScore.col, letterScore.row)}: `
+    + `${letterScore.tileScore} (${historyLetterMeta(letterScore)})`
+  ));
+  const wordBonusLines = wordScore.wordBonuses.length === 0
+    ? ['Word bonus: none']
+    : wordScore.wordBonuses.map((bonus) => (
+      `Word bonus: ${premiumSquareLabel(bonus.premium)} x${bonus.multiplier} @ ${formatCellPosition(bonus.col, bonus.row)}`
+    ));
+  return [
+    `${wordScore.word} breakdown`,
+    ...letterLines,
+    ...wordBonusLines,
+    `Total: ${wordScore.letterSubtotal} x ${wordScore.wordMultiplier} = ${wordScore.score}`,
+  ].join('\n');
+}
+
+function formatCellPosition(col: number, row: number): string {
+  return `(${col},${row})`;
 }
 
 function requestRoomJoin(candidateRoomId: string): void {

@@ -1,5 +1,5 @@
 import type { Letter } from './letters.ts';
-import type { BoardLayoutType } from './boardBonuses.ts';
+import type { BoardLayoutType, PremiumSquareType } from './boardBonuses.ts';
 
 export type Grid = {
   cols: number;
@@ -34,10 +34,32 @@ export type LastMoveState = {
 
 export type WordBuildKind = 'fresh' | 'hook' | 'extension';
 
+export type WordLetterScoreState = {
+  col: number;
+  row: number;
+  letter: Letter;
+  baseScore: number;
+  appliedMultiplier: number;
+  tileScore: number;
+  isNewTile: boolean;
+  premium: PremiumSquareType;
+};
+
+export type WordBonusState = {
+  col: number;
+  row: number;
+  premium: Extract<PremiumSquareType, 'double-word' | 'triple-word'>;
+  multiplier: number;
+};
+
 export type TurnWordScoreState = {
   kind: WordBuildKind;
   word: string;
   score: number;
+  letters: WordLetterScoreState[];
+  letterSubtotal: number;
+  wordMultiplier: number;
+  wordBonuses: WordBonusState[];
 };
 
 export type PreviewCellState = {
@@ -49,6 +71,10 @@ export type PreviewWordState = {
   kind: WordBuildKind;
   word: string;
   score: number;
+  letters: WordLetterScoreState[];
+  letterSubtotal: number;
+  wordMultiplier: number;
+  wordBonuses: WordBonusState[];
   cells: PreviewCellState[];
   anchor: PreviewCellState;
 };

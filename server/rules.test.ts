@@ -46,6 +46,23 @@ assert.deepEqual(firstMove.words, ['CAT']);
 assert.equal(firstMove.score, 10);
 assert.equal(firstMove.wordRuns[0].kind, 'fresh');
 assert.equal(firstMove.wordRuns[0].score, 10);
+assert.equal(firstMove.wordRuns[0].letterSubtotal, 5);
+assert.equal(firstMove.wordRuns[0].wordMultiplier, 2);
+assert.deepEqual(firstMove.wordRuns[0].wordBonuses, [
+  { col: 7, row: 7, premium: 'double-word', multiplier: 2 },
+]);
+assert.deepEqual(
+  firstMove.wordRuns[0].letters.map((letter) => ({
+    letter: letter.letter,
+    tileScore: letter.tileScore,
+    premium: letter.premium,
+  })),
+  [
+    { letter: 'C', tileScore: 3, premium: 'double-word' },
+    { letter: 'A', tileScore: 1, premium: 'normal' },
+    { letter: 'T', tileScore: 1, premium: 'normal' },
+  ],
+);
 assert.deepEqual(firstMove.wordRuns[0].cells, [
   { col: 7, row: 7 },
   { col: 8, row: 7 },
@@ -64,6 +81,9 @@ expectOk(firstMoveWwf);
 assert.deepEqual(firstMoveWwf.words, ['CAT']);
 assert.equal(firstMoveWwf.score, 5);
 assert.equal(firstMoveWwf.wordRuns[0].score, 5);
+assert.equal(firstMoveWwf.wordRuns[0].letterSubtotal, 5);
+assert.equal(firstMoveWwf.wordRuns[0].wordMultiplier, 1);
+assert.deepEqual(firstMoveWwf.wordRuns[0].wordBonuses, []);
 
 const correctedWwfTopLeftMove = validateMove(
   committedBoard([
