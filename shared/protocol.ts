@@ -8,7 +8,7 @@ export type ClientMessage =
   | { type: 'exchange_tiles'; playerId: string; tileIds: string[] }
   | { type: 'set_board_layout'; playerId: string; layout: BoardLayoutType }
   | { type: 'reset_game'; playerId: string }
-  | { type: 'join_room'; roomId: string };
+  | { type: 'join_room'; roomId: string; sessionId?: string };
 
 export type ServerMessage =
   | { type: 'player_id'; playerId: string; sessionId: string; roomId: string }

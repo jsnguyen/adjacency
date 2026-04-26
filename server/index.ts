@@ -145,6 +145,30 @@ export class GameRoom {
     return player;
   }
 
+  disconnectedPlayerId(): string | null {
+    for (const playerId of this.turnOrder) {
+      const player = this.players.get(playerId);
+      if (player && !player.connected) return playerId;
+    }
+
+    for (const player of this.players.values()) {
+      if (!player.connected) return player.id;
+    }
+
+    return null;
+  }
+
+  claimDisconnectedSeat(playerId: string, socket: LiveSocket | null, sessionId: string): Player | null {
+    const player = this.players.get(playerId);
+    if (!player || player.connected) return null;
+
+    player.sessionId = sessionId;
+    player.socket = socket;
+    player.connected = true;
+    this.markChanged();
+    return player;
+  }
+
   disconnectPlayer(playerId: string): Player | null {
     const player = this.players.get(playerId);
     if (!player) return null;
@@ -539,12 +563,32 @@ function joinRoom(socket: LiveSocket, roomId: string, requestedSessionId?: strin
   if (reconnectPlayer) return;
 
   const room = getRoom(normalisedRoomId);
-  if (!room.hasOpenSeat()) {
+  const disconnectedSeatId = room.hasOpenSeat() ? null : room.disconnectedPlayerId();
+  if (!room.hasOpenSeat() && !disconnectedSeatId) {
     send(socket, { type: 'error', msg: 'Room is full. Each room supports 2 players.' });
     return;
   }
 
   leaveAssignedRoom(socket);
+
+  if (disconnectedSeatId) {
+    const previousSessionId = room.getPlayer(disconnectedSeatId)?.sessionId;
+    const sessionId = randomUUID();
+    const player = room.claimDisconnectedSeat(disconnectedSeatId, socket, sessionId);
+    if (!player) {
+      send(socket, { type: 'error', msg: 'Room is full. Each room supports 2 players.' });
+      return;
+    }
+    if (previousSessionId) {
+      sessionAssignments.delete(previousSessionId);
+    }
+    sessionAssignments.set(sessionId, { roomId: room.id, playerId: player.id });
+    socketAssignments.set(socket, { room, playerId: player.id });
+    send(socket, { type: 'player_id', playerId: player.id, sessionId, roomId: room.id });
+    room.broadcastState();
+    return;
+  }
+
   const sessionId = randomUUID();
   const player = room.addPlayer(socket, sessionId);
   sessionAssignments.set(sessionId, { roomId: room.id, playerId: player.id });
@@ -574,7 +618,7 @@ function rejectTurn(socket: WebSocket, _room: GameRoom, reason: string): void {
 
 function handleMessage(socket: LiveSocket, msg: ClientMessage): void {
   if (msg.type === 'join_room') {
-    joinRoom(socket, msg.roomId);
+    joinRoom(socket, msg.roomId, msg.sessionId);
     return;
   }
 
@@ -921,7 +965,10 @@ function isClientMessage(value: unknown): value is ClientMessage {
 
   switch (value.type) {
     case 'join_room':
-      return typeof value.roomId === 'string';
+      return (
+        typeof value.roomId === 'string' &&
+        (value.sessionId === undefined || typeof value.sessionId === 'string')
+      );
     case 'play_turn':
       return (
         typeof value.playerId === 'string' &&

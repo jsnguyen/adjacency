@@ -534,6 +534,14 @@ body {
     min-width: 0;
 }
 
+.room-bar__room {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 8px;
+    flex: 0 0 auto;
+    min-width: 0;
+}
+
 .room-bar__label {
     color: var(--text-muted);
     font-size: 0.74rem;
@@ -1269,6 +1277,10 @@ body {
         flex-direction: column;
         align-items: flex-start;
         gap: 6px;
+    }
+
+    .room-bar__room {
+        width: 100%;
     }
 
     .room-bar__players {

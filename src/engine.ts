@@ -99,6 +99,8 @@ const roomBar = document.createElement('div');
 roomBar.classList.add('room-bar');
 const roomMeta = document.createElement('div');
 roomMeta.classList.add('room-bar__meta');
+const roomIdentity = document.createElement('div');
+roomIdentity.classList.add('room-bar__room');
 const roomLabel = document.createElement('span');
 roomLabel.classList.add('room-bar__label');
 roomLabel.textContent = 'Room';
@@ -107,7 +109,8 @@ roomCurrentValue.classList.add('room-bar__current');
 roomCurrentValue.textContent = initialRoomId;
 roomPlayers = document.createElement('div');
 roomPlayers.classList.add('room-bar__players');
-roomMeta.append(roomLabel, roomCurrentValue, roomPlayers);
+roomIdentity.append(roomLabel, roomCurrentValue);
+roomMeta.append(roomIdentity, roomPlayers);
 const roomControls = document.createElement('div');
 roomControls.classList.add('room-bar__controls');
 roomInput = document.createElement('input');
@@ -1028,7 +1031,12 @@ function requestRoomJoin(candidateRoomId: string): void {
   if (!socketIsOpen()) {
     return;
   }
-  sendMessageToServer({ type: 'join_room', roomId });
+  const { sessionId } = readSessionCookie();
+  sendMessageToServer({
+    type: 'join_room',
+    roomId,
+    ...(sessionId ? { sessionId } : {}),
+  });
 }
 
 function generateRoomId(): string {

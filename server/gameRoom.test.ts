@@ -111,4 +111,22 @@ assert.equal(state.finalTurnsRemaining, 0);
 assert.equal(state.currentPlayerId, null);
 assert.equal(finalRoundRoom.passTurn(finalRoundSecond.id), 'Game is over.');
 
+const reclaimRoom = new GameRoom('reclaim-room');
+const reclaimFirst = reclaimRoom.addPlayer(null, 'reclaim-session-1');
+const reclaimSecond = reclaimRoom.addPlayer(null, 'reclaim-session-2');
+assert.equal(reclaimRoom.hasOpenSeat(), false);
+assert.equal(reclaimRoom.disconnectedPlayerId(), null);
+
+reclaimRoom.disconnectPlayer(reclaimSecond.id);
+assert.equal(reclaimRoom.disconnectedPlayerId(), reclaimSecond.id);
+
+const reclaimedSeat = reclaimRoom.claimDisconnectedSeat(reclaimSecond.id, null, 'reclaim-session-3');
+assert.equal(reclaimedSeat?.id, reclaimSecond.id);
+assert.equal(reclaimedSeat?.sessionId, 'reclaim-session-3');
+assert.equal(reclaimedSeat?.connected, true);
+assert.equal(reclaimRoom.assignments().some((assignment) => assignment.sessionId === 'reclaim-session-2'), false);
+assert.equal(reclaimRoom.assignments().some((assignment) => assignment.sessionId === 'reclaim-session-3'), true);
+
+assert.equal(reclaimRoom.claimDisconnectedSeat(reclaimFirst.id, null, 'reclaim-session-4'), null);
+
 console.log('Game room tests passed.');
