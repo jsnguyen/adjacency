@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { TILE_DISTRIBUTION } from '../shared/letters.ts';
 import type { Letter } from '../shared/letters.ts';
-import type { BoardLayoutType } from '../shared/boardBonuses.ts';
+import { isBoardLayoutType, type BoardLayoutType } from '../shared/boardBonuses.ts';
 import type { ClientMessage, ServerMessage } from '../shared/protocol.ts';
 import type {
   GameState,
@@ -916,7 +916,7 @@ function isClientMessage(value: unknown): value is ClientMessage {
     case 'set_board_layout':
       return (
         typeof value.playerId === 'string' &&
-        (value.layout === 'scrabble' || value.layout === 'words-with-friends')
+        isBoardLayoutType(value.layout)
       );
     case 'reset_game':
       return typeof value.playerId === 'string';

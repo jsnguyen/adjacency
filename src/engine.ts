@@ -49,6 +49,7 @@ let recallButton: HTMLButtonElement | null = null;
 let resetButton: HTMLButtonElement | null = null;
 let scrabbleLayoutButton!: HTMLButtonElement;
 let wordsWithFriendsLayoutButton!: HTMLButtonElement;
+let nytCrossplayLayoutButton!: HTMLButtonElement;
 let selectedExchangeIds = new Set<string>();
 let currentBoardLayout: BoardLayoutType = 'scrabble';
 const boardBackgroundTiles: Tile[] = [];
@@ -163,7 +164,12 @@ if (header) {
   wordsWithFriendsLayoutButton.type = 'button';
   wordsWithFriendsLayoutButton.textContent = 'WWF-like';
 
-  layoutButtons.append(scrabbleLayoutButton, wordsWithFriendsLayoutButton);
+  nytCrossplayLayoutButton = document.createElement('button');
+  nytCrossplayLayoutButton.classList.add('options-layout-button');
+  nytCrossplayLayoutButton.type = 'button';
+  nytCrossplayLayoutButton.textContent = 'NYT crossplay-like';
+
+  layoutButtons.append(scrabbleLayoutButton, wordsWithFriendsLayoutButton, nytCrossplayLayoutButton);
   layoutSection.append(layoutLabel, layoutButtons);
 
   const actionsSection = document.createElement('div');
@@ -379,6 +385,10 @@ scrabbleLayoutButton.addEventListener('click', () => {
 
 wordsWithFriendsLayoutButton.addEventListener('click', () => {
   requestBoardLayout('words-with-friends');
+});
+
+nytCrossplayLayoutButton.addEventListener('click', () => {
+  requestBoardLayout('nyt-crossplay');
 });
 
 if (optionsButton) {
@@ -980,6 +990,7 @@ function renderBoardBackground(layout: BoardLayoutType): void {
       'premium-square--double-word',
       'premium-square--triple-word',
       'center-tile',
+      'center-tile--nyt',
     );
     if (premiumSquare !== 'normal') {
       tile.el.classList.add('premium-square', `premium-square--${premiumSquare}`);
@@ -990,7 +1001,12 @@ function renderBoardBackground(layout: BoardLayoutType): void {
 
     if (col === Math.floor(board.grid.cols / 2) && row === Math.floor(board.grid.rows / 2)) {
       tile.el.classList.add('center-tile');
-      tile.el.setAttribute('data-premium-label', '★');
+      if (layout === 'nyt-crossplay') {
+        tile.el.classList.add('center-tile--nyt');
+        tile.el.setAttribute('data-premium-label', '✦');
+      } else {
+        tile.el.setAttribute('data-premium-label', '★');
+      }
     }
   }
 }
@@ -1010,6 +1026,11 @@ function updateOptionsMenuState(player: PlayerPublicState | null, resetDisabled:
   setBoardLayoutButtonState(
     wordsWithFriendsLayoutButton,
     currentBoardLayout === 'words-with-friends',
+    !canChangeLayout,
+  );
+  setBoardLayoutButtonState(
+    nytCrossplayLayoutButton,
+    currentBoardLayout === 'nyt-crossplay',
     !canChangeLayout,
   );
   if (resetButton) {

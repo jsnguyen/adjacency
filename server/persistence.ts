@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Letter } from '../shared/letters.ts';
-import type { BoardLayoutType } from '../shared/boardBonuses.ts';
+import { isBoardLayoutType, type BoardLayoutType } from '../shared/boardBonuses.ts';
 import type { LastMoveState, TurnHistoryEntryState } from '../shared/states.ts';
 import type { LetterTileState } from './rules.ts';
 
@@ -79,7 +79,7 @@ function isPersistedRoomState(value: unknown): value is PersistedRoomState {
     Array.isArray(value.turnOrder) &&
     Number.isInteger(value.currentTurnIndex) &&
     Array.isArray(value.bag) &&
-    (value.boardLayout === undefined || value.boardLayout === 'scrabble' || value.boardLayout === 'words-with-friends') &&
+    (value.boardLayout === undefined || isBoardLayoutType(value.boardLayout)) &&
     Number.isInteger(value.nextTileNumber) &&
     typeof value.teamScore === 'number' &&
     Array.isArray(value.turnHistory) &&

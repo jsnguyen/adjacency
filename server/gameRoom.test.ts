@@ -24,6 +24,13 @@ assert.equal(state.remainingTiles, totalTiles - 14);
 assert.equal(state.boardLayout, 'scrabble');
 assert.equal(state.canChangeBoardLayout, true);
 
+const nytLayoutReason = room.setBoardLayout(firstPlayer.id, 'nyt-crossplay');
+assert.equal(nytLayoutReason, null);
+
+state = room.snapshot();
+assert.equal(state.boardLayout, 'nyt-crossplay');
+assert.equal(state.canChangeBoardLayout, true);
+
 const layoutReason = room.setBoardLayout(firstPlayer.id, 'words-with-friends');
 assert.equal(layoutReason, null);
 

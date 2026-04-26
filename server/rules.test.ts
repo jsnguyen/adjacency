@@ -65,6 +65,37 @@ assert.deepEqual(firstMoveWwf.words, ['CAT']);
 assert.equal(firstMoveWwf.score, 5);
 assert.equal(firstMoveWwf.wordRuns[0].score, 5);
 
+const correctedWwfTopLeftMove = validateMove(
+  committedBoard([
+    tile('a-wwf', 'A', 1, 0),
+    tile('t-wwf', 'T', 2, 0),
+  ]),
+  [tile('c-wwf', 'C', 0, 0)],
+  board([
+    tile('c-wwf', 'C', 0, 0),
+    tile('a-wwf', 'A', 1, 0),
+    tile('t-wwf', 'T', 2, 0),
+  ]),
+  words,
+  'words-with-friends',
+);
+expectOk(correctedWwfTopLeftMove);
+assert.deepEqual(correctedWwfTopLeftMove.words, ['CAT']);
+assert.equal(correctedWwfTopLeftMove.score, 5);
+assert.equal(correctedWwfTopLeftMove.wordRuns[0].score, 5);
+
+const firstMoveNyt = validateMove(
+  new Map(),
+  rack,
+  board([tile('c', 'C', 7, 7), tile('a', 'A', 8, 7), tile('t', 'T', 9, 7)]),
+  words,
+  'nyt-crossplay',
+);
+expectOk(firstMoveNyt);
+assert.deepEqual(firstMoveNyt.words, ['CAT']);
+assert.equal(firstMoveNyt.score, 6);
+assert.equal(firstMoveNyt.wordRuns[0].score, 6);
+
 expectRejected(
   validateMove(
     new Map(),
@@ -256,6 +287,25 @@ expectOk(tripleWordMove);
 assert.deepEqual(tripleWordMove.words, ['CAT']);
 assert.equal(tripleWordMove.score, 15);
 assert.equal(tripleWordMove.wordRuns[0].score, 15);
+
+const nytCornerTripleLetterMove = validateMove(
+  committedBoard([
+    tile('a4', 'A', 1, 0),
+    tile('t4', 'T', 2, 0),
+  ]),
+  [tile('c4', 'C', 0, 0)],
+  board([
+    tile('c4', 'C', 0, 0),
+    tile('a4', 'A', 1, 0),
+    tile('t4', 'T', 2, 0),
+  ]),
+  words,
+  'nyt-crossplay',
+);
+expectOk(nytCornerTripleLetterMove);
+assert.deepEqual(nytCornerTripleLetterMove.words, ['CAT']);
+assert.equal(nytCornerTripleLetterMove.score, 11);
+assert.equal(nytCornerTripleLetterMove.wordRuns[0].score, 11);
 
 const sharedBonusCrossMove = validateMove(
   committedBoard([
