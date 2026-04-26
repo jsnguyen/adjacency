@@ -1,25 +1,45 @@
-import { GRID, APP_WIDTH } from './constants.ts'
+import { GRID, APP_WIDTH, TILE_SIZE } from './constants.ts'
 import type { ClientMessage, ServerMessage } from '../shared/protocol.ts'
-import type { GameState, PlayerPublicState, TileHolderState, TileState } from '../shared/states.ts'
+import type {
+  GameState,
+  MovePreviewState,
+  PlayerPublicState,
+  TileHolderState,
+  TileState,
+  TurnHistoryEntryState,
+} from '../shared/states.ts'
 import { Actions } from './actions.ts'
 import { Board } from './board.ts'
+import { gridCoordsToTileHolderCoords } from './coordinates.ts'
 import { Hand } from './hand.ts'
 import { readSessionCookie, writeSessionCookie } from './sessionCookie.ts'
 import { Tile } from './tile.ts'
 import { makeDraggable } from './draggable.ts'
-import { setPlayerId, getPlayerId, hasPlayerId } from './clientState.ts'; // kinda like globals
+import { clearPlayerId, setPlayerId, getPlayerId, hasPlayerId } from './clientState.ts'; // kinda like globals
 
 const reconnectBaseDelayMs = 400;
 const reconnectMaxDelayMs = 8000;
+const APP_SHELL_WIDTH = `${parseInt(APP_WIDTH, 10) + 304}px`;
+const ROOM_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+const PREVIEW_DEBOUNCE_MS = 120;
 
 let socket: WebSocket;
 let reconnectAttempts = 0;
 let latestGameState: GameState | null = null;
 let waitingForServer = false;
 let statusBar: HTMLDivElement;
+let statusScoreCard: HTMLDivElement;
+let statusScoreValue: HTMLDivElement;
+let statusScoreMeta: HTMLDivElement;
+let statusMain: HTMLDivElement;
 let statusMessage: HTMLDivElement;
 let statusStats: HTMLDivElement;
 let moveBar: HTMLDivElement;
+let roomInput: HTMLInputElement;
+let roomCurrentValue: HTMLSpanElement;
+let historySummary: HTMLSpanElement;
+let historyList: HTMLDivElement;
+let previewLayer: HTMLDivElement;
 let playButton: HTMLButtonElement | null = null;
 let passButton: HTMLButtonElement | null = null;
 let exchangeButton: HTMLButtonElement | null = null;
@@ -28,6 +48,8 @@ let recallButton: HTMLButtonElement | null = null;
 let resetButton: HTMLButtonElement | null = null;
 let selectedExchangeIds = new Set<string>();
 let resetModal: HTMLDivElement;
+let previewTimerId: number | null = null;
+let latestPreviewRequestId = 0;
 
 connectSocket();
 
@@ -60,28 +82,116 @@ const app = document.getElementById('app')
 if (!app) {
   throw new Error('Missing #app');
 }
-app.style.width = APP_WIDTH;
+app.style.width = `min(calc(100vw - 28px), ${APP_SHELL_WIDTH})`;
 
-let board = new Board(GRID, app);
+const headerContainer = document.querySelector('.container') as HTMLDivElement | null;
+if (headerContainer) {
+  headerContainer.style.width = `min(calc(100vw - 28px), ${APP_SHELL_WIDTH})`;
+}
+
+const roomBar = document.createElement('div');
+roomBar.classList.add('room-bar');
+const roomMeta = document.createElement('div');
+roomMeta.classList.add('room-bar__meta');
+const roomLabel = document.createElement('span');
+roomLabel.classList.add('room-bar__label');
+roomLabel.textContent = 'Room';
+roomCurrentValue = document.createElement('span');
+roomCurrentValue.classList.add('room-bar__current');
+roomCurrentValue.textContent = readSessionCookie().roomId ?? 'main';
+const roomHint = document.createElement('span');
+roomHint.classList.add('room-bar__hint');
+roomHint.textContent = 'Saved automatically on the server';
+roomMeta.append(roomLabel, roomCurrentValue, roomHint);
+const roomControls = document.createElement('div');
+roomControls.classList.add('room-bar__controls');
+roomInput = document.createElement('input');
+roomInput.classList.add('room-input');
+roomInput.type = 'text';
+roomInput.maxLength = 64;
+roomInput.autocomplete = 'off';
+roomInput.spellcheck = false;
+roomInput.placeholder = 'room name';
+roomInput.value = readSessionCookie().roomId ?? 'main';
+const roomJoinButton = document.createElement('button');
+roomJoinButton.classList.add('room-button');
+roomJoinButton.type = 'button';
+roomJoinButton.textContent = 'Join';
+const roomNewButton = document.createElement('button');
+roomNewButton.classList.add('room-button', 'room-button--secondary');
+roomNewButton.type = 'button';
+roomNewButton.textContent = 'New room';
+roomControls.append(roomInput, roomJoinButton, roomNewButton);
+roomBar.append(roomMeta, roomControls);
+app.appendChild(roomBar);
 
 statusBar = document.createElement('div');
 statusBar.classList.add('status-bar');
+statusScoreCard = document.createElement('div');
+statusScoreCard.classList.add('status-score');
+const statusScoreLabel = document.createElement('div');
+statusScoreLabel.classList.add('status-score__label');
+statusScoreLabel.textContent = 'Team score';
+statusScoreValue = document.createElement('div');
+statusScoreValue.classList.add('status-score__value');
+statusScoreValue.textContent = '0';
+statusScoreMeta = document.createElement('div');
+statusScoreMeta.classList.add('status-score__meta');
+statusScoreMeta.textContent = '0 tiles left in bag';
+statusScoreCard.append(statusScoreLabel, statusScoreValue, statusScoreMeta);
+statusMain = document.createElement('div');
+statusMain.classList.add('status-main');
 statusMessage = document.createElement('div');
 statusMessage.classList.add('status-message');
 statusMessage.textContent = 'Connecting to multiplayer server.';
 statusStats = document.createElement('div');
 statusStats.classList.add('status-stats');
-statusBar.append(statusMessage, statusStats);
-app.insertBefore(statusBar, board.el);
+statusMain.append(statusMessage, statusStats);
+statusBar.append(statusScoreCard, statusMain);
+app.appendChild(statusBar);
 
 moveBar = document.createElement('div');
 moveBar.classList.add('move-bar');
 moveBar.textContent = '';
-app.insertBefore(moveBar, board.el.nextSibling);
+app.appendChild(moveBar);
+
+const mainLayout = document.createElement('div');
+mainLayout.classList.add('main-layout');
+app.appendChild(mainLayout);
+
+const boardArea = document.createElement('div');
+boardArea.classList.add('board-area');
+mainLayout.appendChild(boardArea);
+
+const boardScroller = document.createElement('div');
+boardScroller.classList.add('board-scroller');
+boardArea.appendChild(boardScroller);
+
+const boardColumn = document.createElement('div');
+boardColumn.classList.add('board-column');
+boardColumn.style.width = APP_WIDTH;
+boardScroller.appendChild(boardColumn);
+
+const historyPanel = document.createElement('aside');
+historyPanel.classList.add('history-panel');
+const historyHeader = document.createElement('div');
+historyHeader.classList.add('history-panel__header');
+const historyTitle = document.createElement('h2');
+historyTitle.textContent = 'Turn history';
+historySummary = document.createElement('span');
+historySummary.classList.add('history-panel__count');
+historySummary.textContent = 'No turns yet';
+historyHeader.append(historyTitle, historySummary);
+historyList = document.createElement('div');
+historyList.classList.add('history-list');
+historyPanel.append(historyHeader, historyList);
+mainLayout.appendChild(historyPanel);
+
+let board = new Board(GRID, boardColumn);
 
 let bottomBar = document.createElement('div');
 bottomBar.classList.add('bottom-bar')
-app.appendChild(bottomBar);
+boardArea.appendChild(bottomBar);
 
 let hand = new Hand(bottomBar);
 
@@ -114,6 +224,7 @@ if (shuffleButton) {
   shuffleButton.addEventListener('click', () => {
     board.recallHand(hand);
     hand.shuffleHand();
+    scheduleMovePreview();
   });
 }
 
@@ -121,6 +232,7 @@ recallButton = document.getElementById('recall-button') as HTMLButtonElement | n
 if (recallButton) {
   recallButton.addEventListener('click', () => {
     board.recallHand(hand);
+    scheduleMovePreview();
   })
 }
 
@@ -129,6 +241,7 @@ if (playButton) {
   playButton.addEventListener('click', () => {
     const boardState = board.getBoardState();
     const handState = hand.getHandState();
+    clearMovePreview();
     sendTurnToServer(handState, boardState);
   })
 }
@@ -192,6 +305,23 @@ if (resetConfirmButton) {
   });
 }
 
+roomJoinButton.addEventListener('click', () => {
+  requestRoomJoin(roomInput.value);
+});
+
+roomNewButton.addEventListener('click', () => {
+  const nextRoomId = generateRoomId();
+  roomInput.value = nextRoomId;
+  requestRoomJoin(nextRoomId);
+});
+
+roomInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    requestRoomJoin(roomInput.value);
+  }
+});
+
 resetModal.addEventListener('click', (event) => {
   if (event.target === resetModal) {
     hideResetModal();
@@ -223,11 +353,21 @@ for (let col = 0; col < hand.grid.cols; col++) {
   hand.el.appendChild(bgTile.el);
 }
 
+previewLayer = document.createElement('div');
+previewLayer.classList.add('preview-layer');
+board.el.appendChild(previewLayer);
+
 updateActionButtons();
+renderTurnHistory([]);
 
 function syncGameState(state: GameState): void {
+  clearMovePreview();
   latestGameState = state;
   writeSessionCookie({ roomId: state.roomId });
+  roomCurrentValue.textContent = state.roomId;
+  if (document.activeElement !== roomInput) {
+    roomInput.value = state.roomId;
+  }
   selectedExchangeIds = new Set();
   const player = currentPlayer(state);
   const isMyTurn = Boolean(player && state.currentPlayerId === player.id);
@@ -246,7 +386,7 @@ function syncGameState(state: GameState): void {
       const tile = createTile(tileState, hand, false);
       if (!tile) continue;
       if (isMyTurn) {
-        tile.dragAbortCallback = makeDraggable(tile, hand, board);
+        tile.dragAbortCallback = makeDraggable(tile, hand, board, scheduleMovePreview);
         attachRackSelection(tile);
       } else {
         tile.disableDrag?.();
@@ -279,20 +419,19 @@ function updateStatusFromState(state: GameState, player: PlayerPublicState | nul
   const currentTurn = isMyTurn ? 'your turn' : shortId(state.currentPlayerId);
   const playerCount = state.players.length === 1 ? '1 player' : `${state.players.length} players`;
   const dictionary = dictionaryLabel(state);
+  statusScoreValue.textContent = state.teamScore.toString();
+  const bagLabel = `${state.remainingTiles} tile${state.remainingTiles === 1 ? '' : 's'} left in bag`;
+  statusScoreMeta.textContent = state.lastMove?.score
+    ? `+${state.lastMove.score} last turn / ${bagLabel}`
+    : bagLabel;
   renderStats([
     ['Players', playerCount],
     ['Turn', currentTurn],
-    ['Score', String(state.teamScore)],
-    ['Bag', String(state.remainingTiles)],
     ['Words', dictionary],
   ]);
   setStatus(isMyTurn ? 'Your turn.' : `Waiting on ${currentTurn}.`);
-
-  if (state.lastMove) {
-    moveBar.textContent = `${shortId(state.lastMove.playerId)}: ${state.lastMove.message}`;
-  } else {
-    moveBar.textContent = `First word must cross ${state.rules.centerCol},${state.rules.centerRow}.`;
-  }
+  restoreMoveBar();
+  renderTurnHistory(state.turnHistory);
 }
 
 function updateActionButtons(): void {
@@ -334,6 +473,120 @@ function selectedHandTileIds(): string[] {
   return [...selectedExchangeIds].filter((tileId) => handTileIds.has(tileId));
 }
 
+function scheduleMovePreview(): void {
+  latestPreviewRequestId += 1;
+  const requestId = latestPreviewRequestId;
+  clearMovePreviewMarks();
+  restoreMoveBar();
+
+  if (previewTimerId !== null) {
+    window.clearTimeout(previewTimerId);
+  }
+
+  previewTimerId = window.setTimeout(() => {
+    previewTimerId = null;
+    requestMovePreview(requestId);
+  }, PREVIEW_DEBOUNCE_MS);
+}
+
+function requestMovePreview(requestId: number): void {
+  if (!latestGameState || !hasPlayerId() || !socketIsOpen()) {
+    clearMovePreview();
+    return;
+  }
+
+  const player = currentPlayer(latestGameState);
+  if (!player || latestGameState.currentPlayerId !== player.id) {
+    clearMovePreview();
+    return;
+  }
+
+  const hasPendingTiles = board.tiles.some((tile) => !tile.isPlayed);
+  if (!hasPendingTiles) {
+    clearMovePreview();
+    return;
+  }
+
+  socket.send(JSON.stringify({
+    type: 'preview_turn',
+    playerId: getPlayerId(),
+    handState: hand.getHandState(),
+    boardState: board.getBoardState(),
+    requestId,
+  } satisfies ClientMessage));
+}
+
+function applyMovePreview(preview: MovePreviewState): void {
+  clearMovePreviewMarks();
+
+  if (!preview.valid || preview.words.length === 0) {
+    previewLayer.replaceChildren();
+    if (preview.reason) {
+      moveBar.textContent = preview.reason;
+    } else {
+      restoreMoveBar();
+    }
+    return;
+  }
+
+  const highlightedCoords = new Set(
+    preview.words.flatMap((word) => word.cells.map((cell) => `${cell.col}:${cell.row}`)),
+  );
+
+  for (const tile of board.tiles) {
+    if (highlightedCoords.has(`${tile.col}:${tile.row}`)) {
+      tile.el.classList.add('preview-valid');
+    }
+  }
+
+  const anchorBadgeCounts = new Map<string, number>();
+  const badges = preview.words.map((word) => {
+    const badge = document.createElement('div');
+    badge.classList.add('preview-score-badge');
+    badge.textContent = `${word.score}`;
+    const anchorKey = `${word.anchor.col}:${word.anchor.row}`;
+    const badgeIndex = anchorBadgeCounts.get(anchorKey) ?? 0;
+    anchorBadgeCounts.set(anchorKey, badgeIndex + 1);
+    const coords = gridCoordsToTileHolderCoords(word.anchor.col, word.anchor.row, board);
+    badge.style.left = `${coords.x + TILE_SIZE + 4}px`;
+    badge.style.top = `${coords.y + TILE_SIZE + 4 - badgeIndex * 24}px`;
+    return badge;
+  });
+
+  previewLayer.replaceChildren(...badges);
+  moveBar.textContent = `Preview: ${preview.words.map((word) => `${word.word} (${word.score})`).join(' + ')} = ${preview.totalScore} pts`;
+}
+
+function clearMovePreview(): void {
+  latestPreviewRequestId += 1;
+  if (previewTimerId !== null) {
+    window.clearTimeout(previewTimerId);
+    previewTimerId = null;
+  }
+  clearMovePreviewMarks();
+  restoreMoveBar();
+}
+
+function clearMovePreviewMarks(): void {
+  previewLayer.replaceChildren();
+  for (const tile of board.tiles) {
+    tile.el.classList.remove('preview-valid');
+  }
+}
+
+function restoreMoveBar(): void {
+  if (!latestGameState) {
+    moveBar.textContent = '';
+    return;
+  }
+
+  if (latestGameState.lastMove) {
+    moveBar.textContent = `${shortId(latestGameState.lastMove.playerId)}: ${latestGameState.lastMove.message}`;
+  } else {
+    moveBar.textContent = `First word must cross ${latestGameState.rules.centerCol},${latestGameState.rules.centerRow}.`;
+  }
+}
+
 function renderStats(entries: [string, string][]): void {
   const chips = entries.map(([label, value]) => {
     const chip = document.createElement('div');
@@ -349,11 +602,102 @@ function renderStats(entries: [string, string][]): void {
   statusStats.replaceChildren(...chips);
 }
 
+function renderTurnHistory(entries: TurnHistoryEntryState[]): void {
+  historySummary.textContent = entries.length === 0
+    ? 'No turns yet'
+    : `${entries.length} turn${entries.length === 1 ? '' : 's'}`;
+
+  if (entries.length === 0) {
+    const emptyState = document.createElement('div');
+    emptyState.classList.add('history-empty');
+    emptyState.textContent = 'Played turns will show up here with per-word scores.';
+    historyList.replaceChildren(emptyState);
+    return;
+  }
+
+  const entryCards = entries.map((entry) => {
+    const card = document.createElement('article');
+    card.classList.add('history-entry', `history-entry--${entry.kind}`);
+
+    const topRow = document.createElement('div');
+    topRow.classList.add('history-entry__top');
+
+    const meta = document.createElement('div');
+    meta.classList.add('history-entry__meta');
+    meta.textContent = `Turn ${entry.turn} - ${shortId(entry.playerId)}`;
+
+    const total = document.createElement('div');
+    total.classList.add('history-entry__total');
+    total.textContent = `${entry.totalScore} pt${entry.totalScore === 1 ? '' : 's'}`;
+
+    topRow.append(meta, total);
+    card.appendChild(topRow);
+
+    if (entry.words.length > 0) {
+      const wordRows = document.createElement('div');
+      wordRows.classList.add('history-entry__words');
+
+      for (const wordScore of entry.words) {
+        const row = document.createElement('div');
+        row.classList.add('history-entry__word');
+
+        const word = document.createElement('span');
+        word.classList.add('history-entry__word-label');
+        word.textContent = wordScore.word;
+
+        const score = document.createElement('span');
+        score.classList.add('history-entry__word-score');
+        score.textContent = `${wordScore.score} pt${wordScore.score === 1 ? '' : 's'}`;
+
+        row.append(word, score);
+        wordRows.appendChild(row);
+      }
+
+      card.appendChild(wordRows);
+    } else {
+      const message = document.createElement('div');
+      message.classList.add('history-entry__message');
+      message.textContent = entry.message;
+      card.appendChild(message);
+    }
+
+    return card;
+  });
+
+  historyList.replaceChildren(...entryCards);
+}
+
 function dictionaryLabel(state: GameState): string {
   if (state.rules.dictionary === 'permissive') return 'permissive';
   if (state.rules.dictionary === 'system') return `${state.rules.dictionaryWordCount.toLocaleString()} system`;
   if (state.rules.dictionary === 'inline') return `${state.rules.dictionaryWordCount.toLocaleString()} inline`;
   return `${state.rules.dictionaryWordCount.toLocaleString()} file`;
+}
+
+function requestRoomJoin(candidateRoomId: string): void {
+  const roomId = candidateRoomId.trim();
+  if (!ROOM_ID_PATTERN.test(roomId)) {
+    setStatus('Room names can use letters, numbers, underscores, and dashes only.', 'error');
+    return;
+  }
+  if (latestGameState?.roomId === roomId) {
+    setStatus(`Already in room ${roomId}.`);
+    return;
+  }
+
+  clearPlayerId();
+  clearMovePreview();
+  roomCurrentValue.textContent = roomId;
+  writeSessionCookie({ roomId });
+  setStatus(`Joining room ${roomId}.`);
+  if (!socketIsOpen()) {
+    return;
+  }
+  sendMessageToServer({ type: 'join_room', roomId });
+}
+
+function generateRoomId(): string {
+  return Math.random().toString(36).slice(2, 8);
 }
 
 function setStatus(message: string, tone: 'normal' | 'error' = 'normal'): void {
@@ -412,6 +756,10 @@ function connectSocket(): void {
     switch (msg.type) {
       case 'player_id':
         setPlayerId(msg.playerId);
+        roomCurrentValue.textContent = msg.roomId;
+        if (document.activeElement !== roomInput) {
+          roomInput.value = msg.roomId;
+        }
         writeSessionCookie({
           playerId: msg.playerId,
           roomId: msg.roomId,
@@ -421,6 +769,11 @@ function connectSocket(): void {
       case 'game_state':
         waitingForServer = false;
         syncGameState(msg.state);
+        break;
+      case 'move_preview':
+        if (msg.requestId === latestPreviewRequestId) {
+          applyMovePreview(msg.preview);
+        }
         break;
       case 'turn_rejected':
         waitingForServer = false;

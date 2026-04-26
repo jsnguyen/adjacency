@@ -44,6 +44,13 @@ const firstMove = validateMove(
 expectOk(firstMove);
 assert.deepEqual(firstMove.words, ['CAT']);
 assert.equal(firstMove.score, 5);
+assert.equal(firstMove.wordRuns[0].score, 5);
+assert.deepEqual(firstMove.wordRuns[0].cells, [
+  { col: 7, row: 7 },
+  { col: 8, row: 7 },
+  { col: 9, row: 7 },
+]);
+assert.deepEqual(firstMove.wordRuns[0].anchor, { col: 9, row: 7 });
 
 expectRejected(
   validateMove(
@@ -94,6 +101,47 @@ const pluralMove = validateMove(
 );
 expectOk(pluralMove);
 assert.deepEqual(pluralMove.words, ['CATS']);
+
+const inferredPluralMove = validateMove(
+  committedBoard([
+    tile('p', 'P', 7, 7),
+    tile('l', 'L', 8, 7),
+    tile('a', 'A', 9, 7),
+    tile('n', 'N', 10, 7),
+  ]),
+  [tile('s', 'S', 0, 0)],
+  board([
+    tile('p', 'P', 7, 7),
+    tile('l', 'L', 8, 7),
+    tile('a', 'A', 9, 7),
+    tile('n', 'N', 10, 7),
+    tile('s', 'S', 11, 7),
+  ]),
+  buildWordSet('PLAN'),
+);
+expectOk(inferredPluralMove);
+assert.deepEqual(inferredPluralMove.words, ['PLANS']);
+
+const inferredIesMove = validateMove(
+  new Map(),
+  [
+    tile('c', 'C', 0, 0),
+    tile('r', 'R', 1, 0),
+    tile('i', 'I', 2, 0),
+    tile('e', 'E', 3, 0),
+    tile('s', 'S', 4, 0),
+  ],
+  board([
+    tile('c', 'C', 5, 7),
+    tile('r', 'R', 6, 7),
+    tile('i', 'I', 7, 7),
+    tile('e', 'E', 8, 7),
+    tile('s', 'S', 9, 7),
+  ]),
+  buildWordSet('CRY'),
+);
+expectOk(inferredIesMove);
+assert.deepEqual(inferredIesMove.words, ['CRIES']);
 
 const pluralHookMove = validateMove(
   committedBoard([

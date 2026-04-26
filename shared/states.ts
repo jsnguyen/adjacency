@@ -31,6 +31,39 @@ export type LastMoveState = {
   message: string;
 } | null;
 
+export type TurnWordScoreState = {
+  word: string;
+  score: number;
+};
+
+export type PreviewCellState = {
+  col: number;
+  row: number;
+};
+
+export type PreviewWordState = {
+  word: string;
+  score: number;
+  cells: PreviewCellState[];
+  anchor: PreviewCellState;
+};
+
+export type MovePreviewState = {
+  valid: boolean;
+  words: PreviewWordState[];
+  totalScore: number;
+  reason: string | null;
+};
+
+export type TurnHistoryEntryState = {
+  turn: number;
+  playerId: string;
+  kind: 'play' | 'pass' | 'exchange' | 'reset';
+  words: TurnWordScoreState[];
+  totalScore: number;
+  message: string;
+};
+
 export type GameState = {
   roomId: string;
   board: TileHolderState;
@@ -39,6 +72,7 @@ export type GameState = {
   teamScore: number;
   remainingTiles: number;
   lastMove: LastMoveState;
+  turnHistory: TurnHistoryEntryState[];
   rules: {
     boardCols: number;
     boardRows: number;

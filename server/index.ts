@@ -3,12 +3,20 @@ import { createReadStream, existsSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { extname, join, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
-import { TILE_DISTRIBUTION } from '../shared/letters.ts';
+import { LETTER_VALUES, TILE_DISTRIBUTION } from '../shared/letters.ts';
 import type { Letter } from '../shared/letters.ts';
 import type { ClientMessage, ServerMessage } from '../shared/protocol.ts';
-import type { GameState, LastMoveState, PlayerPublicState, TileHolderState } from '../shared/states.ts';
+import type {
+  GameState,
+  LastMoveState,
+  MovePreviewState,
+  PlayerPublicState,
+  TileHolderState,
+  TurnHistoryEntryState,
+  TurnWordScoreState,
+} from '../shared/states.ts';
 import { loadDictionary } from './dictionary.ts';
 import {
   BOARD_COLS,
@@ -20,6 +28,7 @@ import {
   validateMove,
 } from './rules.ts';
 import type { LetterTileState } from './rules.ts';
+import { loadPersistedRooms, savePersistedRooms, type PersistedRoomState } from './persistence.ts';
 
 const PORT = Number(process.env.PORT ?? 8080);
 const HOST = process.env.HOST ?? '0.0.0.0';
@@ -31,9 +40,10 @@ const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
 const rooms = new Map<string, GameRoom>();
 const socketAssignments = new Map<WebSocket, { room: GameRoom; playerId: string }>();
 const heartbeatIntervalMs = 30_000;
-const disconnectGraceMs = 5 * 60_000;
 const sessionAssignments = new Map<string, { roomId: string; playerId: string }>();
-const disconnectTimers = new Map<string, NodeJS.Timeout>();
+const isMainModule = process.argv[1]
+  ? import.meta.url === pathToFileURL(process.argv[1]).href
+  : false;
 
 type Player = {
   id: string;
@@ -47,7 +57,7 @@ type LiveSocket = WebSocket & {
   isAlive: boolean;
 };
 
-class GameRoom {
+export class GameRoom {
   readonly id: string;
   private board = new Map<string, LetterTileState>();
   private players = new Map<string, Player>();
@@ -57,13 +67,17 @@ class GameRoom {
   private nextTileNumber = 1;
   private teamScore = 0;
   private lastMove: LastMoveState = null;
+  private turnHistory: TurnHistoryEntryState[] = [];
+  private nextTurnNumber = 1;
+  private readonly onChange: (() => void) | null;
 
-  constructor(id: string) {
+  constructor(id: string, onChange: (() => void) | null = null) {
     this.id = id;
+    this.onChange = onChange;
     this.bag = shuffle(createBag());
   }
 
-  addPlayer(socket: LiveSocket, sessionId: string): Player {
+  addPlayer(socket: LiveSocket | null, sessionId: string): Player {
     const player: Player = {
       id: randomUUID(),
       sessionId,
@@ -74,6 +88,7 @@ class GameRoom {
     this.drawRack(player);
     this.players.set(player.id, player);
     this.turnOrder.push(player.id);
+    this.markChanged();
     return player;
   }
 
@@ -97,6 +112,7 @@ class GameRoom {
     }
 
     this.broadcastState();
+    this.markChanged();
   }
 
   isEmpty(): boolean {
@@ -149,14 +165,51 @@ class GameRoom {
     player.rack = player.rack.filter((tile) => !playedIds.has(tile.id));
     this.drawRack(player);
     this.teamScore += result.score;
+    const wordScores = buildWordScores(result.words);
     this.lastMove = {
       playerId,
       words: result.words,
       score: result.score,
       message: `Played ${result.words.join(', ')} for ${result.score} points.`,
     };
+    this.recordTurn({
+      playerId,
+      kind: 'play',
+      words: wordScores,
+      totalScore: result.score,
+      message: this.lastMove.message,
+    });
     this.advanceTurn();
+    this.markChanged();
     return null;
+  }
+
+  previewTurn(playerId: string, boardState: TileHolderState, handState: TileHolderState): MovePreviewState {
+    const player = this.players.get(playerId);
+    if (!player) {
+      return { valid: false, words: [], totalScore: 0, reason: 'Unknown player.' };
+    }
+    if (this.currentPlayerId() !== playerId) {
+      return { valid: false, words: [], totalScore: 0, reason: 'It is not your turn.' };
+    }
+
+    const result = validateMove(this.board, player.rack, boardState, dictionary.words);
+    if (!result.ok) {
+      return { valid: false, words: [], totalScore: 0, reason: result.reason };
+    }
+
+    const playedIds = new Set(result.newTiles.map((tile) => tile.id));
+    const rackStateReason = validateSubmittedRack(player.rack, handState, playedIds);
+    if (rackStateReason) {
+      return { valid: false, words: [], totalScore: 0, reason: rackStateReason };
+    }
+
+    return {
+      valid: true,
+      words: result.wordRuns,
+      totalScore: result.score,
+      reason: null,
+    };
   }
 
   passTurn(playerId: string): string | null {
@@ -169,7 +222,15 @@ class GameRoom {
       score: 0,
       message: 'Passed.',
     };
+    this.recordTurn({
+      playerId,
+      kind: 'pass',
+      words: [],
+      totalScore: 0,
+      message: 'Passed.',
+    });
     this.advanceTurn();
+    this.markChanged();
     return null;
   }
 
@@ -189,9 +250,9 @@ class GameRoom {
     }
 
     player.rack = player.rack.filter((tile) => !exchangeIds.has(tile.id));
-    player.rack.push(...this.drawTiles(uniqueTileIds.length));
     this.bag.push(...exchanging.map((tile) => tile.letter));
     shuffleInPlace(this.bag);
+    player.rack.push(...this.drawTiles(uniqueTileIds.length));
     this.reindexRack(player);
 
     this.lastMove = {
@@ -200,7 +261,15 @@ class GameRoom {
       score: 0,
       message: `Exchanged ${uniqueTileIds.length} tile${uniqueTileIds.length === 1 ? '' : 's'}.`,
     };
+    this.recordTurn({
+      playerId,
+      kind: 'exchange',
+      words: [],
+      totalScore: 0,
+      message: this.lastMove.message,
+    });
     this.advanceTurn();
+    this.markChanged();
     return null;
   }
 
@@ -210,6 +279,8 @@ class GameRoom {
     this.board.clear();
     this.bag = shuffle(createBag());
     this.teamScore = 0;
+    this.turnHistory = [];
+    this.nextTurnNumber = 1;
     this.lastMove = {
       playerId,
       words: [],
@@ -223,15 +294,23 @@ class GameRoom {
       this.drawRack(player);
     }
 
+    this.recordTurn({
+      playerId,
+      kind: 'reset',
+      words: [],
+      totalScore: 0,
+      message: 'Reset the game.',
+    });
+    this.markChanged();
     return null;
   }
 
   sendState(socket: WebSocket): void {
-    send(socket, { type: 'game_state', state: this.state() });
+    send(socket, { type: 'game_state', state: this.snapshot() });
   }
 
   broadcastState(): void {
-    const state = this.state();
+    const state = this.snapshot();
     for (const player of this.players.values()) {
       send(player.socket, { type: 'game_state', state });
     }
@@ -250,7 +329,7 @@ class GameRoom {
     this.currentTurnIndex = (this.currentTurnIndex + 1) % this.turnOrder.length;
   }
 
-  private state(): GameState {
+  snapshot(): GameState {
     return {
       roomId: this.id,
       board: {
@@ -269,6 +348,7 @@ class GameRoom {
       teamScore: this.teamScore,
       remainingTiles: this.bag.length,
       lastMove: this.lastMove,
+      turnHistory: this.turnHistory,
       rules: {
         boardCols: BOARD_COLS,
         boardRows: BOARD_ROWS,
@@ -279,6 +359,65 @@ class GameRoom {
         dictionaryWordCount: dictionary.words.size,
       },
     };
+  }
+
+  assignments(): Array<{ playerId: string; sessionId: string }> {
+    return [...this.players.values()].map((player) => ({
+      playerId: player.id,
+      sessionId: player.sessionId,
+    }));
+  }
+
+  toPersistedState(): PersistedRoomState {
+    return {
+      id: this.id,
+      board: [...this.board.values()].sort(sortTiles),
+      players: [...this.players.values()].map((player) => ({
+        id: player.id,
+        sessionId: player.sessionId,
+        rack: [...player.rack].sort(sortTiles),
+      })),
+      turnOrder: [...this.turnOrder],
+      currentTurnIndex: this.currentTurnIndex,
+      bag: [...this.bag],
+      nextTileNumber: this.nextTileNumber,
+      teamScore: this.teamScore,
+      lastMove: this.lastMove,
+      turnHistory: [...this.turnHistory],
+      nextTurnNumber: this.nextTurnNumber,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  static fromPersistedState(
+    state: PersistedRoomState,
+    onChange: (() => void) | null = null,
+  ): GameRoom {
+    const room = new GameRoom(state.id, onChange);
+    room.board = new Map(state.board.map((tile) => [coordKey(tile.col, tile.row), tile]));
+    room.players = new Map(
+      state.players.map((player) => [player.id, {
+        id: player.id,
+        sessionId: player.sessionId,
+        socket: null,
+        rack: [...player.rack].sort(sortTiles),
+        connected: false,
+      }]),
+    );
+    room.turnOrder = state.turnOrder.filter((playerId) => room.players.has(playerId));
+    if (room.turnOrder.length === 0) {
+      room.turnOrder = [...room.players.keys()];
+    }
+    room.currentTurnIndex = room.turnOrder.length === 0
+      ? 0
+      : Math.max(0, Math.min(room.turnOrder.length - 1, state.currentTurnIndex));
+    room.bag = [...state.bag];
+    room.nextTileNumber = state.nextTileNumber;
+    room.teamScore = state.teamScore;
+    room.lastMove = state.lastMove;
+    room.turnHistory = [...state.turnHistory];
+    room.nextTurnNumber = state.nextTurnNumber;
+    return room;
   }
 
   private drawRack(player: Player): void {
@@ -312,6 +451,18 @@ class GameRoom {
     }));
   }
 
+  private recordTurn(entry: Omit<TurnHistoryEntryState, 'turn'>): void {
+    this.turnHistory.unshift({
+      turn: this.nextTurnNumber,
+      ...entry,
+    });
+    this.nextTurnNumber += 1;
+  }
+
+  private markChanged(): void {
+    this.onChange?.();
+  }
+
   private returnRackToBag(player: Player): void {
     this.bag.push(...player.rack.map((tile) => tile.letter));
     shuffleInPlace(this.bag);
@@ -323,8 +474,9 @@ function getRoom(roomId: string): GameRoom {
   const existingRoom = rooms.get(roomId);
   if (existingRoom) return existingRoom;
 
-  const room = new GameRoom(roomId);
+  const room = new GameRoom(roomId, persistRooms);
   rooms.set(roomId, room);
+  persistRooms();
   return room;
 }
 
@@ -336,7 +488,9 @@ function joinRoom(socket: LiveSocket, roomId: string, requestedSessionId?: strin
   }
 
   leaveAssignedRoom(socket);
-  const reconnectPlayer = requestedSessionId ? reconnectExistingPlayer(socket, requestedSessionId) : null;
+  const reconnectPlayer = requestedSessionId
+    ? reconnectExistingPlayer(socket, requestedSessionId, normalisedRoomId)
+    : null;
   if (reconnectPlayer) return;
 
   const room = getRoom(normalisedRoomId);
@@ -353,24 +507,7 @@ function leaveAssignedRoom(socket: WebSocket): void {
   if (!assignment) return;
 
   socketAssignments.delete(socket);
-  const player = assignment.room.disconnectPlayer(assignment.playerId);
-  if (!player) return;
-
-  const existingTimer = disconnectTimers.get(player.sessionId);
-  if (existingTimer) {
-    clearTimeout(existingTimer);
-  }
-
-  const timer = setTimeout(() => {
-    disconnectTimers.delete(player.sessionId);
-    sessionAssignments.delete(player.sessionId);
-    assignment.room.removePlayer(player.id);
-    if (assignment.room.isEmpty()) {
-      rooms.delete(assignment.room.id);
-    }
-  }, disconnectGraceMs);
-  timer.unref();
-  disconnectTimers.set(player.sessionId, timer);
+  assignment.room.disconnectPlayer(assignment.playerId);
 }
 
 function send(socket: WebSocket | null | undefined, msg: ServerMessage): void {
@@ -407,6 +544,14 @@ function handleMessage(socket: LiveSocket, msg: ClientMessage): void {
       }
       break;
     }
+    case 'preview_turn': {
+      send(socket, {
+        type: 'move_preview',
+        preview: room.previewTurn(msg.playerId, msg.boardState, msg.handState),
+        requestId: msg.requestId,
+      });
+      break;
+    }
     case 'pass_turn': {
       const reason = room.passTurn(msg.playerId);
       if (reason) {
@@ -437,7 +582,7 @@ function handleMessage(socket: LiveSocket, msg: ClientMessage): void {
   }
 }
 
-function createBag(): Letter[] {
+export function createBag(): Letter[] {
   const letters: Letter[] = [];
   for (const [letter, count] of Object.entries(TILE_DISTRIBUTION) as [Letter, number][]) {
     for (let index = 0; index < count; index += 1) {
@@ -491,6 +636,31 @@ function validateSubmittedRack(
   }
 
   return null;
+}
+
+function buildWordScores(words: string[]): TurnWordScoreState[] {
+  return words.map((word) => ({
+    word,
+    score: scoreWord(word),
+  }));
+}
+
+function scoreWord(word: string): number {
+  return [...word].reduce((total, letter) => total + LETTER_VALUES[letter as Letter], 0);
+}
+
+function persistRooms(): void {
+  savePersistedRooms([...rooms.values()].map((room) => room.toPersistedState()));
+}
+
+function restoreRooms(): void {
+  for (const persistedRoom of loadPersistedRooms()) {
+    const room = GameRoom.fromPersistedState(persistedRoom, persistRooms);
+    rooms.set(room.id, room);
+    for (const assignment of room.assignments()) {
+      sessionAssignments.set(assignment.sessionId, { roomId: room.id, playerId: assignment.playerId });
+    }
+  }
 }
 
 wss.on('connection', (socket: WebSocket, request: IncomingMessage) => {
@@ -556,13 +726,18 @@ const heartbeat = setInterval(() => {
 }, heartbeatIntervalMs);
 heartbeat.unref();
 
-process.on('SIGINT', () => shutdown('SIGINT'));
-process.on('SIGTERM', () => shutdown('SIGTERM'));
+export function startServer(): void {
+  if (rooms.size === 0) {
+    restoreRooms();
+  }
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
 
-server.listen(PORT, HOST, () => {
-  console.log(`Loaded ${dictionary.words.size} dictionary words from ${dictionary.source}.`);
-  console.log(`Server listening on http://${HOST}:${PORT}`);
-});
+  server.listen(PORT, HOST, () => {
+    console.log(`Loaded ${dictionary.words.size} dictionary words from ${dictionary.source}.`);
+    console.log(`Server listening on http://${HOST}:${PORT}`);
+  });
+}
 
 function handleHttpRequest(request: IncomingMessage, response: ServerResponse): void {
   if (request.url === '/health') {
@@ -681,6 +856,13 @@ function isClientMessage(value: unknown): value is ClientMessage {
         isTileHolderState(value.handState) &&
         isTileHolderState(value.boardState)
       );
+    case 'preview_turn':
+      return (
+        typeof value.playerId === 'string' &&
+        Number.isInteger(value.requestId) &&
+        isTileHolderState(value.handState) &&
+        isTileHolderState(value.boardState)
+      );
     case 'pass_turn':
       return typeof value.playerId === 'string';
     case 'exchange_tiles':
@@ -736,9 +918,10 @@ function shutdown(signal: string): void {
   }, 5000).unref();
 }
 
-function reconnectExistingPlayer(socket: LiveSocket, sessionId: string): Player | null {
+function reconnectExistingPlayer(socket: LiveSocket, sessionId: string, requestedRoomId: string): Player | null {
   const assignment = sessionAssignments.get(sessionId);
   if (!assignment) return null;
+  if (assignment.roomId !== requestedRoomId) return null;
 
   const room = rooms.get(assignment.roomId);
   const player = room?.reconnectPlayer(assignment.playerId, socket);
@@ -747,14 +930,12 @@ function reconnectExistingPlayer(socket: LiveSocket, sessionId: string): Player 
     return null;
   }
 
-  const existingTimer = disconnectTimers.get(sessionId);
-  if (existingTimer) {
-    clearTimeout(existingTimer);
-    disconnectTimers.delete(sessionId);
-  }
-
   socketAssignments.set(socket, { room, playerId: player.id });
   send(socket, { type: 'player_id', playerId: player.id, sessionId: player.sessionId, roomId: room.id });
   room.broadcastState();
   return player;
+}
+
+if (isMainModule) {
+  startServer();
 }

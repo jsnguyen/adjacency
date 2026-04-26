@@ -1,6 +1,6 @@
 import { LETTER_VALUES } from '../shared/letters.ts';
 import type { Letter } from '../shared/letters.ts';
-import type { TileHolderState, TileState } from '../shared/states.ts';
+import type { PreviewCellState, PreviewWordState, TileHolderState, TileState } from '../shared/states.ts';
 
 export const BOARD_COLS = 15;
 export const BOARD_ROWS = 15;
@@ -11,12 +11,14 @@ export const CENTER_ROW = Math.floor(BOARD_ROWS / 2);
 export type LetterTileState = TileState & { letter: Letter };
 
 export type MoveValidationResult =
-  | { ok: true; newTiles: LetterTileState[]; words: string[]; score: number }
+  | { ok: true; newTiles: LetterTileState[]; words: string[]; score: number; wordRuns: PreviewWordState[] }
   | { ok: false; reason: string };
 
 type WordRun = {
   key: string;
   word: string;
+  cells: PreviewCellState[];
+  anchor: PreviewCellState;
 };
 
 type ClosedSquare = {
@@ -97,10 +99,11 @@ export function validateMove(
   const connectionResult = validateConnection(committedBoard, newTiles);
   if (!connectionResult.ok) return connectionResult;
 
-  const words = collectWords(newTiles, proposedBoard, lineResult.direction);
-  if (words.length === 0) {
+  const wordRuns = collectWords(newTiles, proposedBoard, lineResult.direction);
+  if (wordRuns.length === 0) {
     return { ok: false, reason: 'Every submitted turn must form at least one word.' };
   }
+  const words = wordRuns.map((run) => run.word);
 
   const invalidWords = words.filter((word) => !isWordAllowed(word, allowedWords));
   const closedSquares = collectNewClosedSquares(committedBoard, proposedBoard);
@@ -108,8 +111,19 @@ export function validateMove(
     return { ok: false, reason: invalidMoveReason(words, invalidWords, closedSquares) };
   }
 
-  const score = words.reduce((total, word) => total + scoreWord(word), 0);
-  return { ok: true, newTiles, words, score };
+  const score = wordRuns.reduce((total, run) => total + run.score, 0);
+  return {
+    ok: true,
+    newTiles,
+    words,
+    score,
+    wordRuns: wordRuns.map((run) => ({
+      word: run.word,
+      score: run.score,
+      cells: run.cells,
+      anchor: run.anchor,
+    })),
+  };
 }
 
 function normaliseSubmittedTiles(
@@ -216,11 +230,11 @@ function collectWords(
   newTiles: LetterTileState[],
   board: Map<string, LetterTileState>,
   direction: 'horizontal' | 'vertical' | 'single',
-): string[] {
-  const wordsByKey = new Map<string, string>();
+): Array<WordRun & { score: number }> {
+  const wordsByKey = new Map<string, WordRun>();
   const addRun = (run: WordRun) => {
     if (run.word.length > 1) {
-      wordsByKey.set(run.key, run.word);
+      wordsByKey.set(run.key, run);
     }
   };
 
@@ -239,7 +253,10 @@ function collectWords(
     addRun(collectWordRun(newTiles[0], board, 0, 1));
   }
 
-  return [...wordsByKey.values()];
+  return [...wordsByKey.values()].map((run) => ({
+    ...run,
+    score: scoreWord(run.word),
+  }));
 }
 
 function collectWordRun(
@@ -256,18 +273,25 @@ function collectWordRun(
   }
 
   const letters: Letter[] = [];
+  const cells: PreviewCellState[] = [];
   let endCol = startCol;
   let endRow = startRow;
   while (true) {
     const tile = board.get(coordKey(endCol, endRow));
     if (!tile) break;
     letters.push(tile.letter);
+    cells.push({ col: endCol, row: endRow });
     endCol += deltaCol;
     endRow += deltaRow;
   }
 
   const key = `${startCol}:${startRow}:${endCol - deltaCol}:${endRow - deltaRow}`;
-  return { key, word: letters.join('') };
+  return {
+    key,
+    word: letters.join(''),
+    cells,
+    anchor: wordAnchor(cells),
+  };
 }
 
 function collectNewClosedSquares(
@@ -338,7 +362,64 @@ function isWordAllowed(word: string, allowedWords: Set<string>): boolean {
   if (allowedWords.size === 0) {
     return /^[A-Z]{2,}$/.test(word);
   }
-  return allowedWords.has(word);
+  return allowedWords.has(word) || matchesRegularPlural(word, allowedWords);
+}
+
+function matchesRegularPlural(word: string, allowedWords: Set<string>): boolean {
+  if (word.length < 3 || !word.endsWith('S')) {
+    return false;
+  }
+
+  if (word.endsWith('IES') && word.length > 4) {
+    const singularY = `${word.slice(0, -3)}Y`;
+    if (allowedWords.has(singularY)) {
+      return true;
+    }
+  }
+
+  if (word.endsWith('VES') && word.length > 4) {
+    const singularF = `${word.slice(0, -3)}F`;
+    const singularFe = `${word.slice(0, -3)}FE`;
+    if (allowedWords.has(singularF) || allowedWords.has(singularFe)) {
+      return true;
+    }
+  }
+
+  if (word.endsWith('ES') && word.length > 3) {
+    const singularEs = word.slice(0, -2);
+    if (takesEsPlural(singularEs) && allowedWords.has(singularEs)) {
+      return true;
+    }
+
+    if (word.endsWith('ZZES')) {
+      const singularZ = word.slice(0, -3);
+      if (allowedWords.has(singularZ)) {
+        return true;
+      }
+    }
+  }
+
+  const singularS = word.slice(0, -1);
+  return allowedWords.has(singularS);
+}
+
+function takesEsPlural(word: string): boolean {
+  return (
+    word.endsWith('S') ||
+    word.endsWith('X') ||
+    word.endsWith('Z') ||
+    word.endsWith('CH') ||
+    word.endsWith('SH') ||
+    word.endsWith('O')
+  );
+}
+
+function wordAnchor(cells: PreviewCellState[]): PreviewCellState {
+  return cells.reduce((anchor, cell) => {
+    if (cell.row > anchor.row) return cell;
+    if (cell.row === anchor.row && cell.col > anchor.col) return cell;
+    return anchor;
+  });
 }
 
 function scoreWord(word: string): number {

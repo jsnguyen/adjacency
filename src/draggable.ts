@@ -19,7 +19,7 @@ function withinBounds(clientX : number, clientY : number, tileHolder : Hand | Bo
          clientY >= r.top  && clientY <= r.bottom;
 }
 
-export function makeDraggable(tile: Tile, hand: Hand, board: Board) {
+export function makeDraggable(tile: Tile, hand: Hand, board: Board, onChange?: () => void) {
 
   const el = tile.el;
 
@@ -47,6 +47,7 @@ export function makeDraggable(tile: Tile, hand: Hand, board: Board) {
     el.classList.remove('dragging');
     el.style.cursor = 'grab';
     drag = null;
+    onChange?.();
   };
 
   el.addEventListener('pointerdown', (e) => {
@@ -116,6 +117,7 @@ export function makeDraggable(tile: Tile, hand: Hand, board: Board) {
     drag = null;
     el.classList.remove('dragging');
     el.style.cursor = 'grab';
+    onChange?.();
 
   }, ac);
 
