@@ -1,4 +1,3 @@
-import { gridCoordsToTileHolderCoords } from './coordinates.ts'
 import { BOARD_HEIGHT } from './constants.ts'
 import type { TileHolderState } from '../shared/states.ts'
 import type { Tile } from './tile.ts'
@@ -53,22 +52,16 @@ export class Board {
   }
 
   recallHand(hand : Hand) {
+    const recalledTiles: Tile[] = [];
+
     for (const t of [...this.tiles]) {
       if (!t.isPlayed) {
-        if (t.handCol === null || t.handRow === null) {
-          continue;
-        }
-        const c = gridCoordsToTileHolderCoords(t.handCol, t.handRow, hand);
-        t.col = t.handCol
-        t.row = t.handRow
-        if (hand.spaceIsEmpty(t)) {
-          t.tileHolder.removeTile(t);
-          hand.addTile(t);
-          t.el.style.left = c.x + 'px';
-          t.el.style.top  = c.y + 'px';
-        }
+        this.removeTile(t);
+        recalledTiles.push(t);
       }
     }
+
+    hand.restoreTiles(recalledTiles);
   }
 
   getBoardState(): TileHolderState  {

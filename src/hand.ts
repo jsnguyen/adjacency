@@ -57,6 +57,33 @@ export class Hand {
     this.tiles = [];
   }
 
+  restoreTiles(incomingTiles : Tile[] = []) {
+    const orderedTiles = [...this.tiles, ...incomingTiles]
+      .map((tile, index) => ({
+        tile,
+        index,
+        sortCol: tile.handCol ?? tile.col,
+      }))
+      .sort((a, b) => a.sortCol - b.sortCol || a.index - b.index)
+      .map((entry) => entry.tile);
+
+    this.tiles = [];
+
+    for (const [index, tile] of orderedTiles.entries()) {
+      tile.tileHolder = this;
+      tile.col = index;
+      tile.row = 0;
+      tile.handCol = index;
+      tile.handRow = 0;
+      tile.el.classList.remove('preview-valid');
+      tile.el.classList.add('rack-tile');
+      this.tiles.push(tile);
+      this.el.appendChild(tile.el);
+    }
+
+    this.updateOrder();
+  }
+
   shuffleHand() {
     const tiles = this.tiles.filter(t => t !== null);
 

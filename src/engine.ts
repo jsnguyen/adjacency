@@ -28,14 +28,11 @@ let socket: WebSocket;
 let reconnectAttempts = 0;
 let latestGameState: GameState | null = null;
 let waitingForServer = false;
-let statusBar: HTMLDivElement;
 let statusScoreCard: HTMLDivElement;
 let statusScoreValue: HTMLDivElement;
 let statusScoreMeta: HTMLDivElement;
 let statusScoreDelta: HTMLDivElement;
-let statusMain: HTMLDivElement;
 let statusMessage: HTMLDivElement;
-let moveBar: HTMLDivElement;
 let roomInput: HTMLInputElement;
 let roomCurrentValue: HTMLSpanElement;
 let roomPlayers: HTMLDivElement;
@@ -93,6 +90,7 @@ const headerContainer = document.querySelector('.container') as HTMLDivElement |
 if (headerContainer) {
   headerContainer.style.width = `min(calc(100vw - 28px), ${APP_SHELL_WIDTH})`;
 }
+const header = document.querySelector('.header') as HTMLDivElement | null;
 
 const roomBar = document.createElement('div');
 roomBar.classList.add('room-bar');
@@ -104,12 +102,9 @@ roomLabel.textContent = 'Room';
 roomCurrentValue = document.createElement('span');
 roomCurrentValue.classList.add('room-bar__current');
 roomCurrentValue.textContent = readSessionCookie().roomId ?? 'main';
-const roomHint = document.createElement('span');
-roomHint.classList.add('room-bar__hint');
-roomHint.textContent = '2-player room';
 roomPlayers = document.createElement('div');
 roomPlayers.classList.add('room-bar__players');
-roomMeta.append(roomLabel, roomCurrentValue, roomHint, roomPlayers);
+roomMeta.append(roomLabel, roomCurrentValue, roomPlayers);
 const roomControls = document.createElement('div');
 roomControls.classList.add('room-bar__controls');
 roomInput = document.createElement('input');
@@ -129,16 +124,21 @@ roomNewButton.classList.add('room-button', 'room-button--secondary');
 roomNewButton.type = 'button';
 roomNewButton.textContent = 'New room';
 resetButton = document.createElement('button');
-resetButton.classList.add('room-button', 'room-button--reset');
+resetButton.classList.add('room-button', 'room-button--reset', 'header-reset-button');
 resetButton.id = 'reset-button';
 resetButton.type = 'button';
 resetButton.textContent = 'Reset';
-roomControls.append(roomInput, roomJoinButton, roomNewButton, resetButton);
+roomControls.append(roomInput, roomJoinButton, roomNewButton);
 roomBar.append(roomMeta, roomControls);
 app.appendChild(roomBar);
 
-statusBar = document.createElement('div');
-statusBar.classList.add('status-bar');
+if (header) {
+  const headerActions = document.createElement('div');
+  headerActions.classList.add('header-actions');
+  headerActions.appendChild(resetButton);
+  header.appendChild(headerActions);
+}
+
 statusScoreCard = document.createElement('div');
 statusScoreCard.classList.add('status-score');
 const statusScoreLabel = document.createElement('div');
@@ -150,23 +150,13 @@ statusScoreValue.textContent = '0';
 statusScoreMeta = document.createElement('div');
 statusScoreMeta.classList.add('status-score__meta');
 statusScoreMeta.textContent = '0 tiles left in bag';
-statusScoreDelta = document.createElement('div');
-statusScoreDelta.classList.add('status-score__delta');
-statusScoreDelta.setAttribute('aria-hidden', 'true');
-statusScoreCard.append(statusScoreLabel, statusScoreValue, statusScoreMeta, statusScoreDelta);
-statusMain = document.createElement('div');
-statusMain.classList.add('status-main');
 statusMessage = document.createElement('div');
 statusMessage.classList.add('status-message');
 statusMessage.textContent = 'Connecting to multiplayer server.';
-statusMain.append(statusMessage);
-statusBar.append(statusMain, statusScoreCard);
-app.appendChild(statusBar);
-
-moveBar = document.createElement('div');
-moveBar.classList.add('move-bar');
-moveBar.textContent = '';
-app.appendChild(moveBar);
+statusScoreDelta = document.createElement('div');
+statusScoreDelta.classList.add('status-score__delta');
+statusScoreDelta.setAttribute('aria-hidden', 'true');
+statusScoreCard.append(statusScoreLabel, statusScoreValue, statusScoreMeta, statusMessage, statusScoreDelta);
 
 const mainLayout = document.createElement('div');
 mainLayout.classList.add('main-layout');
@@ -175,6 +165,11 @@ app.appendChild(mainLayout);
 const boardArea = document.createElement('div');
 boardArea.classList.add('board-area');
 mainLayout.appendChild(boardArea);
+
+const sideColumn = document.createElement('aside');
+sideColumn.classList.add('side-column');
+sideColumn.append(statusScoreCard);
+mainLayout.appendChild(sideColumn);
 
 const boardScroller = document.createElement('div');
 boardScroller.classList.add('board-scroller');
@@ -198,7 +193,7 @@ historyHeader.append(historyTitle, historySummary);
 historyList = document.createElement('div');
 historyList.classList.add('history-list');
 historyPanel.append(historyHeader, historyList);
-mainLayout.appendChild(historyPanel);
+sideColumn.appendChild(historyPanel);
 
 let board = new Board(GRID, boardColumn);
 
@@ -214,7 +209,7 @@ new Actions(bottomBar, buttonLabels);
 function syncHistoryPanelHeight(): void {
   const boardAreaHeight = Math.ceil(boardArea.getBoundingClientRect().height);
   if (boardAreaHeight > 0) {
-    historyPanel.style.setProperty('--history-panel-max-height', `${boardAreaHeight}px`);
+    sideColumn.style.setProperty('--side-column-max-height', `${boardAreaHeight}px`);
   }
 }
 
@@ -450,7 +445,6 @@ function clearJoinedRoomState(roomId: string, message: string): void {
   renderTurnHistory([]);
   statusScoreValue.textContent = '0';
   statusScoreMeta.textContent = 'Rejoin to keep playing';
-  moveBar.textContent = '';
   setStatus(message);
   updateActionButtons();
 }
@@ -494,7 +488,6 @@ function updateStatusFromState(
   } else {
     setStatus('Partner turn.');
   }
-  restoreMoveBar();
   renderTurnHistory(state.turnHistory);
 }
 
@@ -629,7 +622,7 @@ function scheduleMovePreview(): void {
   latestPreviewRequestId += 1;
   const requestId = latestPreviewRequestId;
   clearMovePreviewMarks();
-  restoreMoveBar();
+  restoreStatusMessage();
 
   if (previewTimerId !== null) {
     window.clearTimeout(previewTimerId);
@@ -674,9 +667,9 @@ function applyMovePreview(preview: MovePreviewState): void {
   if (!preview.valid || preview.words.length === 0) {
     previewLayer.replaceChildren();
     if (preview.reason) {
-      moveBar.textContent = preview.reason;
+      setStatus(preview.reason);
     } else {
-      restoreMoveBar();
+      restoreStatusMessage();
     }
     return;
   }
@@ -691,22 +684,27 @@ function applyMovePreview(preview: MovePreviewState): void {
     }
   }
 
-  const anchorBadgeCounts = new Map<string, number>();
+  const badgeSlotCounts = new Map<string, number>();
   const badges = preview.words.map((word) => {
     const badge = document.createElement('div');
     badge.classList.add('preview-score-badge');
     badge.textContent = `${word.score}`;
-    const anchorKey = `${word.anchor.col}:${word.anchor.row}`;
-    const badgeIndex = anchorBadgeCounts.get(anchorKey) ?? 0;
-    anchorBadgeCounts.set(anchorKey, badgeIndex + 1);
-    const coords = gridCoordsToTileHolderCoords(word.anchor.col, word.anchor.row, board);
-    badge.style.left = `${coords.x + TILE_SIZE - 2}px`;
-    badge.style.top = `${coords.y + TILE_SIZE - 2 - badgeIndex * 18}px`;
+    const cellCoords = word.cells.map((cell) => gridCoordsToTileHolderCoords(cell.col, cell.row, board));
+    const minX = Math.min(...cellCoords.map((coords) => coords.x));
+    const maxX = Math.max(...cellCoords.map((coords) => coords.x));
+    const maxY = Math.max(...cellCoords.map((coords) => coords.y));
+    const centerX = (minX + maxX + TILE_SIZE) / 2;
+    const bottomY = maxY + TILE_SIZE;
+    const badgeKey = `${Math.round(centerX)}:${Math.round(bottomY)}`;
+    const badgeIndex = badgeSlotCounts.get(badgeKey) ?? 0;
+    badgeSlotCounts.set(badgeKey, badgeIndex + 1);
+    badge.style.left = `${centerX}px`;
+    badge.style.top = `${bottomY + 8 + badgeIndex * 22}px`;
     return badge;
   });
 
   previewLayer.replaceChildren(...badges);
-  moveBar.textContent = `Preview: ${preview.words.map((word) => `${word.word} (${word.score}, ${wordKindLabel(word.kind)})`).join(' + ')} = ${preview.totalScore} pts`;
+  restoreStatusMessage();
 }
 
 function clearMovePreview(): void {
@@ -716,7 +714,7 @@ function clearMovePreview(): void {
     previewTimerId = null;
   }
   clearMovePreviewMarks();
-  restoreMoveBar();
+  restoreStatusMessage();
 }
 
 function clearMovePreviewMarks(): void {
@@ -726,16 +724,23 @@ function clearMovePreviewMarks(): void {
   });
 }
 
-function restoreMoveBar(): void {
+function restoreStatusMessage(): void {
   if (!latestGameState) {
-    moveBar.textContent = '';
     return;
   }
-
-  if (latestGameState.lastMove) {
-    moveBar.textContent = `${shortId(latestGameState.lastMove.playerId)}: ${latestGameState.lastMove.message}`;
+  const player = currentPlayer(latestGameState);
+  const isMyTurn = latestGameState.currentPlayerId === player?.id;
+  const partner = player
+    ? latestGameState.players.find((candidate) => candidate.id !== player.id) ?? null
+    : null;
+  if (!player) {
+    setStatus('Waiting for your seat.');
+  } else if (!partner) {
+    setStatus(isMyTurn ? 'Your turn. Partner seat open.' : 'Partner seat open.');
+  } else if (isMyTurn) {
+    setStatus('Your turn.');
   } else {
-    moveBar.textContent = `First word must cross ${latestGameState.rules.centerCol},${latestGameState.rules.centerRow}.`;
+    setStatus('Partner turn.');
   }
 }
 
@@ -899,10 +904,10 @@ function setStatus(message: string, tone: 'normal' | 'error' = 'normal'): void {
   if (statusMessage) {
     statusMessage.textContent = message;
   }
-  if (statusBar) {
-    statusBar.classList.toggle('status-bar--error', tone === 'error');
+  if (statusScoreCard) {
+    statusScoreCard.classList.toggle('status-score--error', tone === 'error');
     if (tone === 'error') {
-      flashElement(statusBar, 'status-bar--shake');
+      flashElement(statusScoreCard, 'status-bar--shake');
     }
   }
 }
@@ -977,7 +982,6 @@ function connectSocket(): void {
       case 'turn_rejected':
         waitingForServer = false;
         setStatus(msg.reason, 'error');
-        moveBar.textContent = msg.reason;
         updateActionButtons();
         break;
       case 'error':
