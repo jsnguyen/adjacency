@@ -1,5 +1,6 @@
 import { LETTER_VALUES } from '../shared/letters.ts';
 import type { Letter } from '../shared/letters.ts';
+import { letterMultiplierAt, wordMultiplierAt } from '../shared/boardBonuses.ts';
 import type { PreviewCellState, PreviewWordState, TileHolderState, TileState, WordBuildKind } from '../shared/states.ts';
 
 export const BOARD_COLS = 15;
@@ -259,7 +260,7 @@ function collectWords(
   return [...wordsByKey.values()].map((run) => ({
     ...run,
     kind: classifyWordRun(run, committedBoard),
-    score: scoreWord(run.word),
+    score: scoreWordRun(run, committedBoard),
   }));
 }
 
@@ -456,8 +457,25 @@ function wordAnchor(cells: PreviewCellState[]): PreviewCellState {
   });
 }
 
-function scoreWord(word: string): number {
-  return [...word].reduce((total, letter) => total + LETTER_VALUES[letter as Letter], 0);
+function scoreWordRun(
+  run: Pick<WordRun, 'word' | 'cells'>,
+  committedBoard: Map<string, LetterTileState>,
+): number {
+  let letterTotal = 0;
+  let wordMultiplier = 1;
+
+  for (let index = 0; index < run.cells.length; index += 1) {
+    const cell = run.cells[index];
+    const letter = run.word[index] as Letter;
+    const isNewTile = !committedBoard.has(coordKey(cell.col, cell.row));
+    const letterMultiplier = isNewTile ? letterMultiplierAt(cell.col, cell.row) : 1;
+    letterTotal += LETTER_VALUES[letter] * letterMultiplier;
+    if (isNewTile) {
+      wordMultiplier *= wordMultiplierAt(cell.col, cell.row);
+    }
+  }
+
+  return letterTotal * wordMultiplier;
 }
 
 function isLetter(value: string | null): value is Letter {

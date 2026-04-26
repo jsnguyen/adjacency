@@ -21,8 +21,6 @@ import { loadDictionary } from './dictionary.ts';
 import {
   BOARD_COLS,
   BOARD_ROWS,
-  CENTER_COL,
-  CENTER_ROW,
   RACK_SIZE,
   coordKey,
   validateMove,
@@ -360,15 +358,6 @@ export class GameRoom {
       remainingTiles: this.bag.length,
       lastMove: this.lastMove,
       turnHistory: this.turnHistory,
-      rules: {
-        boardCols: BOARD_COLS,
-        boardRows: BOARD_ROWS,
-        rackSize: RACK_SIZE,
-        centerCol: CENTER_COL,
-        centerRow: CENTER_ROW,
-        dictionary: dictionary.mode,
-        dictionaryWordCount: dictionary.words.size,
-      },
     };
   }
 

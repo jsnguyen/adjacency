@@ -43,9 +43,9 @@ const firstMove = validateMove(
 );
 expectOk(firstMove);
 assert.deepEqual(firstMove.words, ['CAT']);
-assert.equal(firstMove.score, 5);
+assert.equal(firstMove.score, 10);
 assert.equal(firstMove.wordRuns[0].kind, 'fresh');
-assert.equal(firstMove.wordRuns[0].score, 5);
+assert.equal(firstMove.wordRuns[0].score, 10);
 assert.deepEqual(firstMove.wordRuns[0].cells, [
   { col: 7, row: 7 },
   { col: 8, row: 7 },
@@ -194,6 +194,74 @@ assert.deepEqual(
   multipleWordMove.wordRuns.map((run) => [run.word, run.kind]),
   [['CATS', 'extension'], ['AS', 'hook']],
 );
+
+const doubleLetterMove = validateMove(
+  committedBoard([
+    tile('a1', 'A', 5, 6),
+  ]),
+  [tile('x1', 'X', 0, 0)],
+  board([
+    tile('a1', 'A', 5, 6),
+    tile('x1', 'X', 6, 6),
+  ]),
+  words,
+);
+expectOk(doubleLetterMove);
+assert.deepEqual(doubleLetterMove.words, ['AX']);
+assert.equal(doubleLetterMove.score, 17);
+assert.equal(doubleLetterMove.wordRuns[0].score, 17);
+
+const tripleLetterMove = validateMove(
+  committedBoard([
+    tile('a2', 'A', 4, 5),
+  ]),
+  [tile('x2', 'X', 0, 0)],
+  board([
+    tile('a2', 'A', 4, 5),
+    tile('x2', 'X', 5, 5),
+  ]),
+  words,
+);
+expectOk(tripleLetterMove);
+assert.deepEqual(tripleLetterMove.words, ['AX']);
+assert.equal(tripleLetterMove.score, 25);
+assert.equal(tripleLetterMove.wordRuns[0].score, 25);
+
+const tripleWordMove = validateMove(
+  committedBoard([
+    tile('a3', 'A', 1, 0),
+    tile('t3', 'T', 2, 0),
+  ]),
+  [tile('c3', 'C', 0, 0)],
+  board([
+    tile('c3', 'C', 0, 0),
+    tile('a3', 'A', 1, 0),
+    tile('t3', 'T', 2, 0),
+  ]),
+  words,
+);
+expectOk(tripleWordMove);
+assert.deepEqual(tripleWordMove.words, ['CAT']);
+assert.equal(tripleWordMove.score, 15);
+assert.equal(tripleWordMove.wordRuns[0].score, 15);
+
+const sharedBonusCrossMove = validateMove(
+  committedBoard([
+    tile('a4', 'A', 5, 6),
+    tile('a5', 'A', 6, 5),
+  ]),
+  [tile('x3', 'X', 0, 0)],
+  board([
+    tile('a4', 'A', 5, 6),
+    tile('x3', 'X', 6, 6),
+    tile('a5', 'A', 6, 5),
+  ]),
+  words,
+);
+expectOk(sharedBonusCrossMove);
+assert.deepEqual(sharedBonusCrossMove.words, ['AX', 'AX']);
+assert.equal(sharedBonusCrossMove.score, 34);
+assert.deepEqual(sharedBonusCrossMove.wordRuns.map((run) => run.score), [17, 17]);
 
 const invalidCrossWordMove = validateMove(
   committedBoard([

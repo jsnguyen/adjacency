@@ -77,13 +77,4 @@ export type GameState = {
   remainingTiles: number;
   lastMove: LastMoveState;
   turnHistory: TurnHistoryEntryState[];
-  rules: {
-    boardCols: number;
-    boardRows: number;
-    rackSize: number;
-    centerCol: number;
-    centerRow: number;
-    dictionary: 'inline' | 'file' | 'system' | 'permissive';
-    dictionaryWordCount: number;
-  };
 };

@@ -4,7 +4,6 @@ import type {
   GameState,
   MovePreviewState,
   PlayerPublicState,
-  TileHolderState,
   TileState,
   TurnHistoryEntryState,
   WordBuildKind,
@@ -13,16 +12,18 @@ import { Actions } from './actions.ts'
 import { Board } from './board.ts'
 import { gridCoordsToTileHolderCoords } from './coordinates.ts'
 import { Hand } from './hand.ts'
+import { premiumSquareAt, premiumSquareLabel } from '../shared/boardBonuses.ts'
 import { readSessionCookie, writeSessionCookie } from './sessionCookie.ts'
 import { Tile } from './tile.ts'
 import { makeDraggable } from './draggable.ts'
-import { clearPlayerId, setPlayerId, getPlayerId, hasPlayerId } from './clientState.ts'; // kinda like globals
+import { clearPlayerId, setPlayerId, getPlayerId, hasPlayerId } from './clientState.ts'
 
 const reconnectBaseDelayMs = 400;
 const reconnectMaxDelayMs = 8000;
 const APP_SHELL_WIDTH = `${parseInt(APP_WIDTH, 10) + 304}px`;
 const ROOM_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const PREVIEW_DEBOUNCE_MS = 120;
+const DEFAULT_ROOM_ID = 'main';
 
 let socket: WebSocket;
 let reconnectAttempts = 0;
@@ -32,7 +33,6 @@ let statusScoreCard: HTMLDivElement;
 let statusScoreValue: HTMLDivElement;
 let statusScoreMeta: HTMLDivElement;
 let statusScoreDelta: HTMLDivElement;
-let statusMessage: HTMLDivElement;
 let roomInput: HTMLInputElement;
 let roomCurrentValue: HTMLSpanElement;
 let roomPlayers: HTMLDivElement;
@@ -46,7 +46,12 @@ let shuffleButton: HTMLButtonElement | null = null;
 let recallButton: HTMLButtonElement | null = null;
 let resetButton: HTMLButtonElement | null = null;
 let selectedExchangeIds = new Set<string>();
-let resetModal: HTMLDivElement;
+let confirmModal: HTMLDivElement;
+let confirmTitle: HTMLHeadingElement;
+let confirmBody: HTMLParagraphElement;
+let confirmConfirmButton: HTMLButtonElement;
+let confirmCancelButton: HTMLButtonElement;
+let pendingConfirmAction: (() => void) | null = null;
 let previewTimerId: number | null = null;
 let latestPreviewRequestId = 0;
 let scoreAnimationFrameId: number | null = null;
@@ -65,26 +70,14 @@ function sendMessageToServer(message: ClientMessage): void {
   socket.send(JSON.stringify(message));
 }
 
-function sendTurnToServer(handState: TileHolderState, boardState: TileHolderState): void {
-  if (!hasPlayerId()) {
-    setStatus('Waiting for a player id.');
-    return;
-  }
-
-  sendMessageToServer({
-    type: 'play_turn',
-    playerId: getPlayerId(),
-    handState: handState,
-    boardState: boardState,
-  });
-}
-
 const appRoot = document.getElementById('app');
 if (!appRoot) {
   throw new Error('Missing #app');
 }
 const app = appRoot as HTMLDivElement;
 app.style.width = `min(calc(100vw - 28px), ${APP_SHELL_WIDTH})`;
+const initialSession = readSessionCookie();
+const initialRoomId = initialSession.roomId ?? DEFAULT_ROOM_ID;
 
 const headerContainer = document.querySelector('.container') as HTMLDivElement | null;
 if (headerContainer) {
@@ -101,7 +94,7 @@ roomLabel.classList.add('room-bar__label');
 roomLabel.textContent = 'Room';
 roomCurrentValue = document.createElement('span');
 roomCurrentValue.classList.add('room-bar__current');
-roomCurrentValue.textContent = readSessionCookie().roomId ?? 'main';
+roomCurrentValue.textContent = initialRoomId;
 roomPlayers = document.createElement('div');
 roomPlayers.classList.add('room-bar__players');
 roomMeta.append(roomLabel, roomCurrentValue, roomPlayers);
@@ -114,7 +107,7 @@ roomInput.maxLength = 64;
 roomInput.autocomplete = 'off';
 roomInput.spellcheck = false;
 roomInput.placeholder = 'room name';
-roomInput.value = readSessionCookie().roomId ?? 'main';
+roomInput.value = initialRoomId;
 const roomJoinButton = document.createElement('button');
 roomJoinButton.classList.add('room-button');
 roomJoinButton.type = 'button';
@@ -150,13 +143,10 @@ statusScoreValue.textContent = '0';
 statusScoreMeta = document.createElement('div');
 statusScoreMeta.classList.add('status-score__meta');
 statusScoreMeta.textContent = '0 tiles left in bag';
-statusMessage = document.createElement('div');
-statusMessage.classList.add('status-message');
-statusMessage.textContent = 'Connecting to multiplayer server.';
 statusScoreDelta = document.createElement('div');
 statusScoreDelta.classList.add('status-score__delta');
 statusScoreDelta.setAttribute('aria-hidden', 'true');
-statusScoreCard.append(statusScoreLabel, statusScoreValue, statusScoreMeta, statusMessage, statusScoreDelta);
+statusScoreCard.append(statusScoreLabel, statusScoreValue, statusScoreMeta, statusScoreDelta);
 
 const mainLayout = document.createElement('div');
 mainLayout.classList.add('main-layout');
@@ -203,7 +193,7 @@ boardArea.appendChild(bottomBar);
 
 let hand = new Hand(bottomBar);
 
-const buttonLabels = ['recall', 'shuffle', 'exchange', 'pass', 'play'];
+const buttonLabels = ['recall', 'shuffle', 'play', 'exchange', 'pass'];
 new Actions(bottomBar, buttonLabels);
 
 function syncHistoryPanelHeight(): void {
@@ -223,20 +213,24 @@ if ('ResizeObserver' in window) {
 window.addEventListener('resize', syncHistoryPanelHeight);
 window.requestAnimationFrame(syncHistoryPanelHeight);
 
-resetModal = document.createElement('div');
-resetModal.classList.add('modal-backdrop');
-resetModal.hidden = true;
-resetModal.innerHTML = `
-  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="reset-title">
-    <h2 id="reset-title">Reset game?</h2>
-    <p>This clears the board, keeps you in the room, and removes the other player until they rejoin.</p>
+confirmModal = document.createElement('div');
+confirmModal.classList.add('modal-backdrop');
+confirmModal.hidden = true;
+confirmModal.innerHTML = `
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+    <h2 id="confirm-title"></h2>
+    <p id="confirm-body"></p>
     <div class="modal-actions">
-      <button type="button" id="reset-cancel-button" class="action-button action-button--secondary">cancel</button>
-      <button type="button" id="reset-confirm-button" class="action-button action-button--reset">reset</button>
+      <button type="button" id="confirm-cancel-button" class="action-button action-button--secondary">cancel</button>
+      <button type="button" id="confirm-confirm-button" class="action-button">confirm</button>
     </div>
   </div>
 `;
-document.body.appendChild(resetModal);
+document.body.appendChild(confirmModal);
+confirmTitle = document.getElementById('confirm-title') as HTMLHeadingElement;
+confirmBody = document.getElementById('confirm-body') as HTMLParagraphElement;
+confirmConfirmButton = document.getElementById('confirm-confirm-button') as HTMLButtonElement;
+confirmCancelButton = document.getElementById('confirm-cancel-button') as HTMLButtonElement;
 
 shuffleButton = document.getElementById('shuffle-button') as HTMLButtonElement | null;
 if (shuffleButton) {
@@ -258,40 +252,61 @@ if (recallButton) {
 playButton = document.getElementById('play-button') as HTMLButtonElement | null;
 if (playButton) {
   playButton.addEventListener('click', () => {
-    const boardState = board.getBoardState();
-    const handState = hand.getHandState();
-    clearMovePreview();
-    sendTurnToServer(handState, boardState);
+    if (!hasPendingBoardTiles()) {
+      setStatus('Play at least one tile before submitting a turn.', 'error');
+      return;
+    }
+    showConfirmationModal({
+      title: 'Play turn?',
+      body: 'Submit the tiles currently on the board.',
+      confirmLabel: 'play',
+      confirmTone: 'play',
+      onConfirm: submitPlayTurn,
+    });
   })
 }
 
 passButton = document.getElementById('pass-button') as HTMLButtonElement | null;
 if (passButton) {
   passButton.addEventListener('click', () => {
-    if (!hasPlayerId()) {
-      setStatus('Waiting for a player id.');
-      return;
-    }
-    sendMessageToServer({ type: 'pass_turn', playerId: getPlayerId() });
+    if (!requirePlayerId()) return;
+    showConfirmationModal({
+      title: 'Pass turn?',
+      body: 'This ends your turn without playing a word.',
+      confirmLabel: 'pass',
+      confirmTone: 'pass',
+      onConfirm: () => {
+        const playerId = requirePlayerId();
+        if (!playerId) return;
+        sendMessageToServer({ type: 'pass_turn', playerId });
+      },
+    });
   });
 }
 
 exchangeButton = document.getElementById('exchange-button') as HTMLButtonElement | null;
 if (exchangeButton) {
   exchangeButton.addEventListener('click', () => {
-    if (!hasPlayerId()) {
-      setStatus('Waiting for a player id.');
-      return;
-    }
+    if (!requirePlayerId()) return;
     const tileIds = selectedHandTileIds();
     if (tileIds.length === 0) {
       setStatus('Select rack tiles to exchange.', 'error');
       return;
     }
-    sendMessageToServer({
-      type: 'exchange_tiles',
-      playerId: getPlayerId(),
-      tileIds,
+    showConfirmationModal({
+      title: 'Exchange tiles?',
+      body: `Exchange ${tileIds.length} selected tile${tileIds.length === 1 ? '' : 's'} for new ones from the bag.`,
+      confirmLabel: 'exchange',
+      confirmTone: 'exchange',
+      onConfirm: () => {
+        const playerId = requirePlayerId();
+        if (!playerId) return;
+        sendMessageToServer({
+          type: 'exchange_tiles',
+          playerId,
+          tileIds,
+        });
+      },
     });
   });
 }
@@ -299,30 +314,27 @@ if (exchangeButton) {
 resetButton = document.getElementById('reset-button') as HTMLButtonElement | null;
 if (resetButton) {
   resetButton.addEventListener('click', () => {
-    if (!hasPlayerId()) {
-      setStatus('Waiting for a player id.');
-      return;
-    }
-    showResetModal();
+    if (!requirePlayerId()) return;
+    showConfirmationModal({
+      title: 'Reset game?',
+      body: 'This clears the board, keeps you in the room, and removes the other player until they rejoin.',
+      confirmLabel: 'reset',
+      confirmTone: 'reset',
+      onConfirm: () => {
+        const playerId = requirePlayerId();
+        if (!playerId) return;
+        sendMessageToServer({ type: 'reset_game', playerId });
+      },
+    });
   });
 }
 
-const resetCancelButton = document.getElementById('reset-cancel-button') as HTMLButtonElement | null;
-if (resetCancelButton) {
-  resetCancelButton.addEventListener('click', hideResetModal);
-}
-
-const resetConfirmButton = document.getElementById('reset-confirm-button') as HTMLButtonElement | null;
-if (resetConfirmButton) {
-  resetConfirmButton.addEventListener('click', () => {
-    if (!hasPlayerId()) {
-      setStatus('Waiting for a player id.');
-      return;
-    }
-    hideResetModal();
-    sendMessageToServer({ type: 'reset_game', playerId: getPlayerId() });
-  });
-}
+confirmCancelButton.addEventListener('click', hideConfirmModal);
+confirmConfirmButton.addEventListener('click', () => {
+  const action = pendingConfirmAction;
+  hideConfirmModal();
+  action?.();
+});
 
 roomJoinButton.addEventListener('click', () => {
   requestRoomJoin(roomInput.value);
@@ -341,15 +353,15 @@ roomInput.addEventListener('keydown', (event) => {
   }
 });
 
-resetModal.addEventListener('click', (event) => {
-  if (event.target === resetModal) {
-    hideResetModal();
+confirmModal.addEventListener('click', (event) => {
+  if (event.target === confirmModal) {
+    hideConfirmModal();
   }
 });
 
 window.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && !resetModal.hidden) {
-    hideResetModal();
+  if (event.key === 'Escape' && !confirmModal.hidden) {
+    hideConfirmModal();
   }
 });
 
@@ -360,6 +372,16 @@ window.addEventListener('keydown', (event) => {
 for (let row = 0; row < board.grid.rows; row++) {
   for (let col = 0; col < board.grid.cols; col++) {
     const bgTile = new Tile(col, row, board, true);
+    const premiumSquare = premiumSquareAt(col, row);
+    if (premiumSquare !== 'normal') {
+      bgTile.el.classList.add('premium-square', `premium-square--${premiumSquare}`);
+      bgTile.el.setAttribute(
+        'data-premium-label',
+        col === Math.floor(board.grid.cols / 2) && row === Math.floor(board.grid.rows / 2)
+          ? '★'
+          : premiumSquareLabel(premiumSquare),
+      );
+    }
     if (col === Math.floor(board.grid.cols / 2) && row === Math.floor(board.grid.rows / 2)) {
       bgTile.el.classList.add('center-tile');
     }
@@ -385,10 +407,7 @@ function syncGameState(state: GameState): void {
   const previousState = latestGameState;
   latestGameState = state;
   writeSessionCookie({ roomId: state.roomId });
-  roomCurrentValue.textContent = state.roomId;
-  if (document.activeElement !== roomInput) {
-    roomInput.value = state.roomId;
-  }
+  syncRoomUi(state.roomId);
   selectedExchangeIds = new Set();
   const player = currentPlayer(state);
   const isMyTurn = Boolean(player && state.currentPlayerId === player.id);
@@ -422,7 +441,7 @@ function syncGameState(state: GameState): void {
 }
 
 function clearJoinedRoomState(roomId: string, message: string): void {
-  hideResetModal();
+  hideConfirmModal();
   clearMovePreview();
   stopScoreAnimation();
   hideScoreGain();
@@ -435,10 +454,7 @@ function clearJoinedRoomState(roomId: string, message: string): void {
     playerId: undefined,
     sessionId: undefined,
   });
-  roomCurrentValue.textContent = roomId;
-  if (document.activeElement !== roomInput) {
-    roomInput.value = roomId;
-  }
+  syncRoomUi(roomId);
   board.clearTiles();
   hand.clearTiles();
   renderRoomPlayers(null, null);
@@ -470,24 +486,12 @@ function updateStatusFromState(
   previousState: GameState | null,
 ): void {
   const isMyTurn = state.currentPlayerId === player?.id;
-  const partner = player ? state.players.find((candidate) => candidate.id !== player.id) ?? null : null;
   syncScoreFeedback(previousState, state);
   const bagLabel = `${state.remainingTiles} tile${state.remainingTiles === 1 ? '' : 's'} left in bag`;
   statusScoreMeta.textContent = state.lastMove?.score
     ? `+${state.lastMove.score} last turn / ${bagLabel}`
     : bagLabel;
   app.classList.toggle('app--waiting-turn', !isMyTurn);
-  statusMessage.classList.toggle('status-message--active', isMyTurn);
-  statusMessage.classList.toggle('status-message--waiting', !isMyTurn);
-  if (!player) {
-    setStatus('Waiting for your seat.');
-  } else if (!partner) {
-    setStatus(isMyTurn ? 'Your turn. Partner seat open.' : 'Partner seat open.');
-  } else if (isMyTurn) {
-    setStatus('Your turn.');
-  } else {
-    setStatus('Partner turn.');
-  }
   renderTurnHistory(state.turnHistory);
 }
 
@@ -622,7 +626,6 @@ function scheduleMovePreview(): void {
   latestPreviewRequestId += 1;
   const requestId = latestPreviewRequestId;
   clearMovePreviewMarks();
-  restoreStatusMessage();
 
   if (previewTimerId !== null) {
     window.clearTimeout(previewTimerId);
@@ -646,8 +649,7 @@ function requestMovePreview(requestId: number): void {
     return;
   }
 
-  const hasPendingTiles = board.tiles.some((tile) => !tile.isPlayed);
-  if (!hasPendingTiles) {
+  if (!hasPendingBoardTiles()) {
     clearMovePreview();
     return;
   }
@@ -666,11 +668,6 @@ function applyMovePreview(preview: MovePreviewState): void {
 
   if (!preview.valid || preview.words.length === 0) {
     previewLayer.replaceChildren();
-    if (preview.reason) {
-      setStatus(preview.reason);
-    } else {
-      restoreStatusMessage();
-    }
     return;
   }
 
@@ -704,7 +701,6 @@ function applyMovePreview(preview: MovePreviewState): void {
   });
 
   previewLayer.replaceChildren(...badges);
-  restoreStatusMessage();
 }
 
 function clearMovePreview(): void {
@@ -714,40 +710,17 @@ function clearMovePreview(): void {
     previewTimerId = null;
   }
   clearMovePreviewMarks();
-  restoreStatusMessage();
 }
 
 function clearMovePreviewMarks(): void {
   previewLayer.replaceChildren();
-  document.querySelectorAll('.preview-valid').forEach((tile) => {
-    tile.classList.remove('preview-valid');
-  });
-}
-
-function restoreStatusMessage(): void {
-  if (!latestGameState) {
-    return;
-  }
-  const player = currentPlayer(latestGameState);
-  const isMyTurn = latestGameState.currentPlayerId === player?.id;
-  const partner = player
-    ? latestGameState.players.find((candidate) => candidate.id !== player.id) ?? null
-    : null;
-  if (!player) {
-    setStatus('Waiting for your seat.');
-  } else if (!partner) {
-    setStatus(isMyTurn ? 'Your turn. Partner seat open.' : 'Partner seat open.');
-  } else if (isMyTurn) {
-    setStatus('Your turn.');
-  } else {
-    setStatus('Partner turn.');
+  for (const tile of board.tiles) {
+    tile.el.classList.remove('preview-valid');
   }
 }
 
 function renderRoomPlayers(state: GameState | null, player: PlayerPublicState | null): void {
-  const partner = player && state
-    ? state.players.find((candidate) => candidate.id !== player.id) ?? null
-    : null;
+  const partner = state ? partnerPlayer(state, player) : null;
 
   const slots: Array<{ label: string; player: PlayerPublicState | null }> = player
     ? [
@@ -887,7 +860,7 @@ function requestRoomJoin(candidateRoomId: string): void {
 
   clearPlayerId();
   clearMovePreview();
-  roomCurrentValue.textContent = roomId;
+  syncRoomUi(roomId);
   writeSessionCookie({ roomId });
   setStatus(`Joining room ${roomId}.`);
   if (!socketIsOpen()) {
@@ -901,13 +874,11 @@ function generateRoomId(): string {
 }
 
 function setStatus(message: string, tone: 'normal' | 'error' = 'normal'): void {
-  if (statusMessage) {
-    statusMessage.textContent = message;
-  }
+  void message;
   if (statusScoreCard) {
     statusScoreCard.classList.toggle('status-score--error', tone === 'error');
     if (tone === 'error') {
-      flashElement(statusScoreCard, 'status-bar--shake');
+      flashElement(statusScoreCard, 'status-score--shake');
     }
   }
 }
@@ -921,6 +892,42 @@ function flashElement(element: HTMLElement, className: string): void {
 function shortId(playerId: string | null | undefined): string {
   if (!playerId) return 'none';
   return playerId.slice(0, 6);
+}
+
+function syncRoomUi(roomId: string): void {
+  roomCurrentValue.textContent = roomId;
+  if (document.activeElement !== roomInput) {
+    roomInput.value = roomId;
+  }
+}
+
+function requirePlayerId(): string | null {
+  if (!hasPlayerId()) {
+    setStatus('Waiting for a player id.');
+    return null;
+  }
+  return getPlayerId();
+}
+
+function hasPendingBoardTiles(): boolean {
+  return board.tiles.some((tile) => !tile.isPlayed);
+}
+
+function partnerPlayer(state: GameState, player: PlayerPublicState | null): PlayerPublicState | null {
+  if (!player) return null;
+  return state.players.find((candidate) => candidate.id !== player.id) ?? null;
+}
+
+function submitPlayTurn(): void {
+  const playerId = requirePlayerId();
+  if (!playerId) return;
+  clearMovePreview();
+  sendMessageToServer({
+    type: 'play_turn',
+    playerId,
+    handState: hand.getHandState(),
+    boardState: board.getBoardState(),
+  });
 }
 
 function connectSocket(): void {
@@ -956,10 +963,7 @@ function connectSocket(): void {
     switch (msg.type) {
       case 'player_id':
         setPlayerId(msg.playerId);
-        roomCurrentValue.textContent = msg.roomId;
-        if (document.activeElement !== roomInput) {
-          roomInput.value = msg.roomId;
-        }
+        syncRoomUi(msg.roomId);
         writeSessionCookie({
           playerId: msg.playerId,
           roomId: msg.roomId,
@@ -1030,10 +1034,35 @@ function webSocketUrl(): string {
   return url.toString();
 }
 
-function showResetModal(): void {
-  resetModal.hidden = false;
+function showConfirmModal(): void {
+  confirmModal.hidden = false;
 }
 
-function hideResetModal(): void {
-  resetModal.hidden = true;
+function showConfirmationModal({
+  title,
+  body,
+  confirmLabel,
+  confirmTone,
+  onConfirm,
+}: {
+  title: string;
+  body: string;
+  confirmLabel: string;
+  confirmTone: 'play' | 'pass' | 'exchange' | 'reset';
+  onConfirm: () => void;
+}): void {
+  confirmTitle.textContent = title;
+  confirmBody.textContent = body;
+  confirmConfirmButton.textContent = confirmLabel;
+  confirmConfirmButton.className = 'action-button';
+  confirmConfirmButton.classList.add(`action-button--${confirmTone}`);
+  pendingConfirmAction = onConfirm;
+  showConfirmModal();
+  confirmCancelButton.focus();
+}
+
+function hideConfirmModal(): void {
+  confirmModal.hidden = true;
+  pendingConfirmAction = null;
+  confirmConfirmButton.className = 'action-button';
 }

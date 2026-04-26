@@ -8,6 +8,7 @@ export class Actions {
     for (const label of buttonLabels) {
       const button = document.createElement('button');
       button.classList.add('action-button');
+      button.type = 'button';
       button.id = `${label}-button`;
       button.textContent = label;
       actionBar.appendChild(button);
