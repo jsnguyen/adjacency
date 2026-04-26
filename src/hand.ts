@@ -1,4 +1,5 @@
 import { GRID, TILE_SIZE } from './constants.ts'
+import type { TileHolderState } from '../shared/states.ts'
 import { gridCoordsToTileHolderCoords } from './coordinates.ts'
 import { Tile } from './tile.ts'
 import type { Letter } from './constants.ts';
@@ -89,4 +90,17 @@ export class Hand {
       t.el.style.top  = c.y + 'px';
     }
   }
+
+  getHandState(): TileHolderState  {
+    return {
+      tiles: this.tiles.map((tile) => ({
+        id: tile.id,
+        letter: tile.letter,
+        col: tile.col,
+        row: tile.row,
+      })),
+      name: "hand"
+    };
+  }
+
 }

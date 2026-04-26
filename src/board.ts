@@ -1,5 +1,6 @@
 import { gridCoordsToTileHolderCoords } from './coordinates.ts'
 import { BOARD_HEIGHT } from './constants.ts'
+import type { TileHolderState } from '../shared/states.ts'
 import type { Tile } from './tile.ts'
 import type { Hand } from './hand.ts'
 
@@ -65,4 +66,17 @@ export class Board {
       }
     });
   }
+
+  getBoardState(): TileHolderState  {
+    return {
+      tiles: this.tiles.map((tile) => ({
+        id: tile.id,
+        letter: tile.letter,
+        col: tile.col,
+        row: tile.row,
+      })),
+      name: "board"
+    };
+  }
+
 }

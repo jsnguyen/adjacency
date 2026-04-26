@@ -6,6 +6,7 @@ import { gridCoordsToTileHolderCoords } from './coordinates.ts'
 
 export class Tile {
 
+  id: string;
   col: number;
   row: number;
   tileHolder: Hand | Board;
@@ -20,6 +21,7 @@ export class Tile {
   value: number | null;
 
   constructor(col : number, row : number, tileHolder : Hand | Board, isBGTile : boolean = false) {
+    this.id = crypto.randomUUID();
     this.col = col;
     this.row = row;
     this.tileHolder = tileHolder;

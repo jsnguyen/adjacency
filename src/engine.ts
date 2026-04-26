@@ -1,10 +1,44 @@
+const socket = new WebSocket('ws://localhost:8080');
+
 import { GRID, TILE_SIZE, APP_WIDTH } from './constants.ts'
+import type { TileHolderState } from '../shared/states.ts'
 import { Actions } from './actions.ts'
 import { Board } from './board.ts'
 import { Hand } from './hand.ts'
 import { Tile } from './tile.ts'
 import { makeDraggable } from './draggable.ts'
+import { setPlayerId, getPlayerId } from './clientState.ts'; // kinda like globals
 
+socket.addEventListener('open', () => {
+  console.log('Connected to server');
+});
+
+socket.addEventListener('message', (event: MessageEvent) => {
+  const msg = JSON.parse(event.data);
+  console.log(msg);
+
+  if (msg.type == 'player_id') {
+    console.log(`Assigned player id: ${msg.playerId}`)
+    setPlayerId(msg.playerId);
+  }
+
+});
+
+function sendTurnToServer(handState: TileHolderState, boardState: TileHolderState): void {
+  if (socket.readyState !== WebSocket.OPEN) {
+    console.warn('Socket is not open yet');
+    return;
+  }
+
+  const state = {
+    type: 'play_turn',
+    playerId: getPlayerId(),
+    handState: handState,
+    boardState: boardState
+  };
+
+  socket.send(JSON.stringify(state));
+}
 
 const app = document.getElementById('app')
 if (!app) {
@@ -50,6 +84,9 @@ const playButton = document.getElementById('play-button')
 if (playButton) {
   playButton.addEventListener('click', () => {
     board.setAllPlayed();
+    const boardState = board.getBoardState();
+    const handState = hand.getHandState();
+    sendTurnToServer(handState, boardState);
   })
 }
 

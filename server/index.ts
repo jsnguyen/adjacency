@@ -1,34 +1,34 @@
 import { WebSocket, WebSocketServer } from 'ws';
 import type { ClientMessage, ServerMessage } from '../shared/protocol.ts';
+import type { TileHolderState } from '../shared/states.ts'
 
 const PORT = 8080;
 const wss = new WebSocketServer({ port: PORT });
 
-function send(socket: WebSocket, message: ServerMessage): void {
-  socket.send(JSON.stringify(message));
+function send(socket: WebSocket, msg: ServerMessage): void {
+  socket.send(JSON.stringify(msg));
+}
+
+function verifyBoard(socket: WebSocket, handState: TileHolderState, boardState: TileHolderState) {
+  socket.send(JSON.stringify({type: 'board_is_valid', boardIsValid: true}))
 }
 
 wss.on('connection', (socket : WebSocket) => {
   const playerId = crypto.randomUUID();
-
-  send(socket, { type: 'hello', playerId });
+  send(socket, { type: 'player_id', playerId });
 
   socket.on('message', (raw : ServerMessage) => {
-    const message = JSON.parse(String(raw)) as ClientMessage;
+    const msg = JSON.parse(String(raw)) as ClientMessage;
 
-    switch (message.type) {
-      case 'create_room':
-        send(socket, { type: 'room_created', roomId: crypto.randomUUID() });
-        break;
-
-      case 'join_room':
-        send(socket, { type: 'state', data: { roomId: message.roomId } });
-        break;
-
+    switch (msg.type) {
       case 'play_turn':
-        send(socket, { type: 'state', data: message.data });
+        console.log(msg.handState);
+        console.log(msg.boardState);
+        console.log(msg.playerId);
+        verifyBoard(socket, msg.handState, msg.boardState);
         break;
     }
+
   });
 });
 

@@ -1,10 +1,11 @@
+import type { TileHolderState } from '../shared/states.ts'
+
 export type ClientMessage =
-  | { type: 'create_room' }
-  | { type: 'join_room'; roomId: string }
-  | { type: 'play_turn'; data: unknown };
+  | { type: 'play_turn'; playerId: string; handState: TileHolderState;  boardState: TileHolderState}
+  | { type: 'join_room'; roomId: string };
 
 export type ServerMessage =
-  | { type: 'hello'; playerId: string }
+  | { type: 'player_id'; playerId: string }
+  | { type: 'board_is_valid'; boardIsValid: boolean }
   | { type: 'room_created'; roomId: string }
-  | { type: 'state'; data: unknown }
-  | { type: 'error'; message: string };
+  | { type: 'error'; msg: string };

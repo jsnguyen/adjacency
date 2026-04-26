@@ -125,10 +125,12 @@ export function makeDraggable(tile: Tile, hand: Hand, board: Board) {
       }, { once: true });
     }
 
+    /*
     console.log('Tile added to', finalTileHolder === board ? 'board' : 'hand');
     if (finalTileHolder === board) {
       console.log(tile.row, tile.col, tile.handRow, tile.handCol)
     }
+    */
 
     drag = null;
     el.style.cursor = 'grab';
