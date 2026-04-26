@@ -394,6 +394,10 @@ body {
     z-index: 40;
 }
 
+.modal-backdrop[hidden] {
+    display: none;
+}
+
 .modal-card {
     width: min(420px, calc(100vw - 32px));
     padding: 18px;
