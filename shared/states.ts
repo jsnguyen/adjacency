@@ -1,4 +1,5 @@
 import type { Letter } from './letters.ts';
+import type { BoardLayoutType } from './boardBonuses.ts';
 
 export type Grid = {
   cols: number;
@@ -73,6 +74,8 @@ export type GameState = {
   board: TileHolderState;
   players: PlayerPublicState[];
   currentPlayerId: string | null;
+  boardLayout: BoardLayoutType;
+  canChangeBoardLayout: boolean;
   teamScore: number;
   remainingTiles: number;
   lastMove: LastMoveState;

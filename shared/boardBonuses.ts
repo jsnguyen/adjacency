@@ -1,3 +1,5 @@
+export type BoardLayoutType = 'scrabble' | 'words-with-friends';
+
 export type PremiumSquareType =
   | 'normal'
   | 'double-letter'
@@ -5,7 +7,7 @@ export type PremiumSquareType =
   | 'double-word'
   | 'triple-word';
 
-const PREMIUM_SQUARES = new Map<string, PremiumSquareType>([
+const SCRABBLE_PREMIUM_SQUARES = new Map<string, PremiumSquareType>([
   ['0:0', 'triple-word'],
   ['0:3', 'double-letter'],
   ['0:7', 'triple-word'],
@@ -69,8 +71,75 @@ const PREMIUM_SQUARES = new Map<string, PremiumSquareType>([
   ['14:14', 'triple-word'],
 ]);
 
-export function premiumSquareAt(col: number, row: number): PremiumSquareType {
-  return PREMIUM_SQUARES.get(`${col}:${row}`) ?? 'normal';
+const WWF_PREMIUM_SQUARES = new Map<string, PremiumSquareType>([
+  ['0:0', 'triple-letter'],
+  ['0:3', 'triple-word'],
+  ['0:6', 'double-letter'],
+  ['0:8', 'double-letter'],
+  ['0:11', 'triple-word'],
+  ['0:14', 'triple-letter'],
+  ['1:1', 'double-word'],
+  ['1:5', 'double-word'],
+  ['1:9', 'double-word'],
+  ['1:13', 'double-word'],
+  ['2:6', 'double-letter'],
+  ['2:8', 'double-letter'],
+  ['3:0', 'triple-word'],
+  ['3:3', 'triple-letter'],
+  ['3:11', 'triple-letter'],
+  ['3:14', 'triple-word'],
+  ['4:4', 'triple-letter'],
+  ['4:6', 'double-letter'],
+  ['4:8', 'double-letter'],
+  ['4:10', 'triple-letter'],
+  ['5:1', 'double-word'],
+  ['5:5', 'triple-letter'],
+  ['5:9', 'triple-letter'],
+  ['5:13', 'double-word'],
+  ['6:0', 'double-letter'],
+  ['6:2', 'double-letter'],
+  ['6:4', 'double-letter'],
+  ['6:10', 'double-letter'],
+  ['6:12', 'double-letter'],
+  ['6:14', 'double-letter'],
+  ['8:0', 'double-letter'],
+  ['8:2', 'double-letter'],
+  ['8:4', 'double-letter'],
+  ['8:10', 'double-letter'],
+  ['8:12', 'double-letter'],
+  ['8:14', 'double-letter'],
+  ['9:1', 'double-word'],
+  ['9:5', 'triple-letter'],
+  ['9:9', 'triple-letter'],
+  ['9:13', 'double-word'],
+  ['10:4', 'triple-letter'],
+  ['10:6', 'double-letter'],
+  ['10:8', 'double-letter'],
+  ['10:10', 'triple-letter'],
+  ['11:0', 'triple-word'],
+  ['11:3', 'triple-letter'],
+  ['11:11', 'triple-letter'],
+  ['11:14', 'triple-word'],
+  ['12:6', 'double-letter'],
+  ['12:8', 'double-letter'],
+  ['13:1', 'double-word'],
+  ['13:5', 'double-word'],
+  ['13:9', 'double-word'],
+  ['13:13', 'double-word'],
+  ['14:0', 'triple-letter'],
+  ['14:3', 'triple-word'],
+  ['14:6', 'double-letter'],
+  ['14:8', 'double-letter'],
+  ['14:11', 'triple-word'],
+  ['14:14', 'triple-letter'],
+]);
+
+function premiumSquaresForLayout(layout: BoardLayoutType): Map<string, PremiumSquareType> {
+  return layout === 'words-with-friends' ? WWF_PREMIUM_SQUARES : SCRABBLE_PREMIUM_SQUARES;
+}
+
+export function premiumSquareAt(layout: BoardLayoutType, col: number, row: number): PremiumSquareType {
+  return premiumSquaresForLayout(layout).get(`${col}:${row}`) ?? 'normal';
 }
 
 export function premiumSquareLabel(square: PremiumSquareType): string {
@@ -88,8 +157,8 @@ export function premiumSquareLabel(square: PremiumSquareType): string {
   }
 }
 
-export function letterMultiplierAt(col: number, row: number): number {
-  switch (premiumSquareAt(col, row)) {
+export function letterMultiplierAt(layout: BoardLayoutType, col: number, row: number): number {
+  switch (premiumSquareAt(layout, col, row)) {
     case 'double-letter':
       return 2;
     case 'triple-letter':
@@ -99,8 +168,8 @@ export function letterMultiplierAt(col: number, row: number): number {
   }
 }
 
-export function wordMultiplierAt(col: number, row: number): number {
-  switch (premiumSquareAt(col, row)) {
+export function wordMultiplierAt(layout: BoardLayoutType, col: number, row: number): number {
+  switch (premiumSquareAt(layout, col, row)) {
     case 'double-word':
       return 2;
     case 'triple-word':

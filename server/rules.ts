@@ -1,6 +1,6 @@
 import { LETTER_VALUES } from '../shared/letters.ts';
 import type { Letter } from '../shared/letters.ts';
-import { letterMultiplierAt, wordMultiplierAt } from '../shared/boardBonuses.ts';
+import { letterMultiplierAt, type BoardLayoutType, wordMultiplierAt } from '../shared/boardBonuses.ts';
 import type { PreviewCellState, PreviewWordState, TileHolderState, TileState, WordBuildKind } from '../shared/states.ts';
 
 export const BOARD_COLS = 15;
@@ -47,6 +47,7 @@ export function validateMove(
   playerRack: LetterTileState[],
   submittedBoard: TileHolderState,
   allowedWords: Set<string>,
+  boardLayout: BoardLayoutType = 'scrabble',
 ): MoveValidationResult {
   const submittedTiles = normaliseSubmittedTiles(submittedBoard);
   if (!submittedTiles.ok) return submittedTiles;
@@ -101,7 +102,7 @@ export function validateMove(
   const connectionResult = validateConnection(committedBoard, newTiles);
   if (!connectionResult.ok) return connectionResult;
 
-  const wordRuns = collectWords(newTiles, proposedBoard, committedBoard, lineResult.direction);
+  const wordRuns = collectWords(newTiles, proposedBoard, committedBoard, lineResult.direction, boardLayout);
   if (wordRuns.length === 0) {
     return { ok: false, reason: 'Every submitted turn must form at least one word.' };
   }
@@ -234,6 +235,7 @@ function collectWords(
   board: Map<string, LetterTileState>,
   committedBoard: Map<string, LetterTileState>,
   direction: 'horizontal' | 'vertical' | 'single',
+  boardLayout: BoardLayoutType,
 ): Array<WordRun & { score: number }> {
   const wordsByKey = new Map<string, WordRun>();
   const addRun = (run: WordRun) => {
@@ -260,7 +262,7 @@ function collectWords(
   return [...wordsByKey.values()].map((run) => ({
     ...run,
     kind: classifyWordRun(run, committedBoard),
-    score: scoreWordRun(run, committedBoard),
+    score: scoreWordRun(run, committedBoard, boardLayout),
   }));
 }
 
@@ -460,6 +462,7 @@ function wordAnchor(cells: PreviewCellState[]): PreviewCellState {
 function scoreWordRun(
   run: Pick<WordRun, 'word' | 'cells'>,
   committedBoard: Map<string, LetterTileState>,
+  boardLayout: BoardLayoutType,
 ): number {
   let letterTotal = 0;
   let wordMultiplier = 1;
@@ -468,10 +471,10 @@ function scoreWordRun(
     const cell = run.cells[index];
     const letter = run.word[index] as Letter;
     const isNewTile = !committedBoard.has(coordKey(cell.col, cell.row));
-    const letterMultiplier = isNewTile ? letterMultiplierAt(cell.col, cell.row) : 1;
+    const letterMultiplier = isNewTile ? letterMultiplierAt(boardLayout, cell.col, cell.row) : 1;
     letterTotal += LETTER_VALUES[letter] * letterMultiplier;
     if (isNewTile) {
-      wordMultiplier *= wordMultiplierAt(cell.col, cell.row);
+      wordMultiplier *= wordMultiplierAt(boardLayout, cell.col, cell.row);
     }
   }
 

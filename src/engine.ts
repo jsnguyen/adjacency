@@ -12,7 +12,7 @@ import { Actions } from './actions.ts'
 import { Board } from './board.ts'
 import { gridCoordsToTileHolderCoords } from './coordinates.ts'
 import { Hand } from './hand.ts'
-import { premiumSquareAt, premiumSquareLabel } from '../shared/boardBonuses.ts'
+import { premiumSquareAt, premiumSquareLabel, type BoardLayoutType } from '../shared/boardBonuses.ts'
 import { readSessionCookie, writeSessionCookie } from './sessionCookie.ts'
 import { Tile } from './tile.ts'
 import { makeDraggable } from './draggable.ts'
@@ -39,13 +39,19 @@ let roomPlayers: HTMLDivElement;
 let historySummary: HTMLSpanElement;
 let historyList: HTMLDivElement;
 let previewLayer: HTMLDivElement;
+let optionsButton: HTMLButtonElement | null = null;
+let optionsMenu!: HTMLDivElement;
 let playButton: HTMLButtonElement | null = null;
 let passButton: HTMLButtonElement | null = null;
 let exchangeButton: HTMLButtonElement | null = null;
 let shuffleButton: HTMLButtonElement | null = null;
 let recallButton: HTMLButtonElement | null = null;
 let resetButton: HTMLButtonElement | null = null;
+let scrabbleLayoutButton!: HTMLButtonElement;
+let wordsWithFriendsLayoutButton!: HTMLButtonElement;
 let selectedExchangeIds = new Set<string>();
+let currentBoardLayout: BoardLayoutType = 'scrabble';
+const boardBackgroundTiles: Tile[] = [];
 let confirmModal: HTMLDivElement;
 let confirmTitle: HTMLHeadingElement;
 let confirmBody: HTMLParagraphElement;
@@ -117,7 +123,7 @@ roomNewButton.classList.add('room-button', 'room-button--secondary');
 roomNewButton.type = 'button';
 roomNewButton.textContent = 'New room';
 resetButton = document.createElement('button');
-resetButton.classList.add('room-button', 'room-button--reset', 'header-reset-button');
+resetButton.classList.add('room-button', 'room-button--reset');
 resetButton.id = 'reset-button';
 resetButton.type = 'button';
 resetButton.textContent = 'Reset';
@@ -128,7 +134,44 @@ app.appendChild(roomBar);
 if (header) {
   const headerActions = document.createElement('div');
   headerActions.classList.add('header-actions');
-  headerActions.appendChild(resetButton);
+  optionsButton = document.createElement('button');
+  optionsButton.classList.add('room-button', 'header-options-button');
+  optionsButton.type = 'button';
+  optionsButton.textContent = 'Options';
+
+  optionsMenu = document.createElement('div');
+  optionsMenu.classList.add('options-menu');
+  optionsMenu.hidden = true;
+
+  const layoutSection = document.createElement('div');
+  layoutSection.classList.add('options-menu__section');
+
+  const layoutLabel = document.createElement('div');
+  layoutLabel.classList.add('options-menu__label');
+  layoutLabel.textContent = 'Board';
+
+  const layoutButtons = document.createElement('div');
+  layoutButtons.classList.add('options-menu__layout-buttons');
+
+  scrabbleLayoutButton = document.createElement('button');
+  scrabbleLayoutButton.classList.add('options-layout-button');
+  scrabbleLayoutButton.type = 'button';
+  scrabbleLayoutButton.textContent = 'Scrabble-like';
+
+  wordsWithFriendsLayoutButton = document.createElement('button');
+  wordsWithFriendsLayoutButton.classList.add('options-layout-button');
+  wordsWithFriendsLayoutButton.type = 'button';
+  wordsWithFriendsLayoutButton.textContent = 'WWF-like';
+
+  layoutButtons.append(scrabbleLayoutButton, wordsWithFriendsLayoutButton);
+  layoutSection.append(layoutLabel, layoutButtons);
+
+  const actionsSection = document.createElement('div');
+  actionsSection.classList.add('options-menu__section', 'options-menu__section--actions');
+  actionsSection.appendChild(resetButton);
+
+  optionsMenu.append(layoutSection, actionsSection);
+  headerActions.append(optionsButton, optionsMenu);
   header.appendChild(headerActions);
 }
 
@@ -199,7 +242,7 @@ new Actions(bottomBar, buttonLabels);
 function syncHistoryPanelHeight(): void {
   const boardAreaHeight = Math.ceil(boardArea.getBoundingClientRect().height);
   if (boardAreaHeight > 0) {
-    sideColumn.style.setProperty('--side-column-max-height', `${boardAreaHeight}px`);
+    sideColumn.style.setProperty('--side-column-height', `${boardAreaHeight}px`);
   }
 }
 
@@ -314,6 +357,7 @@ if (exchangeButton) {
 resetButton = document.getElementById('reset-button') as HTMLButtonElement | null;
 if (resetButton) {
   resetButton.addEventListener('click', () => {
+    hideOptionsMenu();
     if (!requirePlayerId()) return;
     showConfirmationModal({
       title: 'Reset game?',
@@ -326,6 +370,21 @@ if (resetButton) {
         sendMessageToServer({ type: 'reset_game', playerId });
       },
     });
+  });
+}
+
+scrabbleLayoutButton.addEventListener('click', () => {
+  requestBoardLayout('scrabble');
+});
+
+wordsWithFriendsLayoutButton.addEventListener('click', () => {
+  requestBoardLayout('words-with-friends');
+});
+
+if (optionsButton) {
+  optionsButton.addEventListener('click', (event) => {
+    event.stopPropagation();
+    optionsMenu.hidden = !optionsMenu.hidden;
   });
 }
 
@@ -359,9 +418,21 @@ confirmModal.addEventListener('click', (event) => {
   }
 });
 
+document.addEventListener('click', (event) => {
+  if (!optionsButton || optionsMenu.hidden) return;
+  const target = event.target;
+  if (!(target instanceof Node)) return;
+  if (optionsMenu.contains(target) || optionsButton.contains(target)) return;
+  hideOptionsMenu();
+});
+
 window.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && !confirmModal.hidden) {
     hideConfirmModal();
+    return;
+  }
+  if (event.key === 'Escape' && !optionsMenu.hidden) {
+    hideOptionsMenu();
   }
 });
 
@@ -372,22 +443,11 @@ window.addEventListener('keydown', (event) => {
 for (let row = 0; row < board.grid.rows; row++) {
   for (let col = 0; col < board.grid.cols; col++) {
     const bgTile = new Tile(col, row, board, true);
-    const premiumSquare = premiumSquareAt(col, row);
-    if (premiumSquare !== 'normal') {
-      bgTile.el.classList.add('premium-square', `premium-square--${premiumSquare}`);
-      bgTile.el.setAttribute(
-        'data-premium-label',
-        col === Math.floor(board.grid.cols / 2) && row === Math.floor(board.grid.rows / 2)
-          ? '★'
-          : premiumSquareLabel(premiumSquare),
-      );
-    }
-    if (col === Math.floor(board.grid.cols / 2) && row === Math.floor(board.grid.rows / 2)) {
-      bgTile.el.classList.add('center-tile');
-    }
+    boardBackgroundTiles.push(bgTile);
     board.el.appendChild(bgTile.el);
   }
 }
+renderBoardBackground(currentBoardLayout);
 
 for (let col = 0; col < hand.grid.cols; col++) {
   const bgTile = new Tile(col, 0, hand, true);
@@ -406,8 +466,10 @@ function syncGameState(state: GameState): void {
   clearMovePreview();
   const previousState = latestGameState;
   latestGameState = state;
+  currentBoardLayout = state.boardLayout;
   writeSessionCookie({ roomId: state.roomId });
   syncRoomUi(state.roomId);
+  renderBoardBackground(state.boardLayout);
   selectedExchangeIds = new Set();
   const player = currentPlayer(state);
   const isMyTurn = Boolean(player && state.currentPlayerId === player.id);
@@ -442,10 +504,13 @@ function syncGameState(state: GameState): void {
 
 function clearJoinedRoomState(roomId: string, message: string): void {
   hideConfirmModal();
+  hideOptionsMenu();
   clearMovePreview();
   stopScoreAnimation();
   hideScoreGain();
   latestGameState = null;
+  currentBoardLayout = 'scrabble';
+  renderBoardBackground(currentBoardLayout);
   selectedExchangeIds = new Set();
   clearPlayerId();
   app.classList.remove('app--waiting-turn');
@@ -597,6 +662,8 @@ function updateActionButtons(): void {
     exchangeButton.textContent = selectedCount > 0 ? `exchange ${selectedCount}` : 'exchange';
     exchangeButton.disabled = baseDisabled || selectedCount === 0;
   }
+
+  updateOptionsMenuState(player, resetDisabled);
 }
 
 function attachRackSelection(tile: Tile): void {
@@ -859,6 +926,7 @@ function requestRoomJoin(candidateRoomId: string): void {
   }
 
   clearPlayerId();
+  hideOptionsMenu();
   clearMovePreview();
   syncRoomUi(roomId);
   writeSessionCookie({ roomId });
@@ -901,6 +969,63 @@ function syncRoomUi(roomId: string): void {
   }
 }
 
+function renderBoardBackground(layout: BoardLayoutType): void {
+  for (const tile of boardBackgroundTiles) {
+    const { col, row } = tile;
+    const premiumSquare = premiumSquareAt(layout, col, row);
+    tile.el.classList.remove(
+      'premium-square',
+      'premium-square--double-letter',
+      'premium-square--triple-letter',
+      'premium-square--double-word',
+      'premium-square--triple-word',
+      'center-tile',
+    );
+    if (premiumSquare !== 'normal') {
+      tile.el.classList.add('premium-square', `premium-square--${premiumSquare}`);
+      tile.el.setAttribute('data-premium-label', premiumSquareLabel(premiumSquare));
+    } else {
+      tile.el.removeAttribute('data-premium-label');
+    }
+
+    if (col === Math.floor(board.grid.cols / 2) && row === Math.floor(board.grid.rows / 2)) {
+      tile.el.classList.add('center-tile');
+      tile.el.setAttribute('data-premium-label', '★');
+    }
+  }
+}
+
+function hideOptionsMenu(): void {
+  optionsMenu.hidden = true;
+}
+
+function updateOptionsMenuState(player: PlayerPublicState | null, resetDisabled: boolean): void {
+  const canChangeLayout = Boolean(
+    player &&
+    latestGameState?.canChangeBoardLayout &&
+    socketIsOpen() &&
+    !waitingForServer,
+  );
+  setBoardLayoutButtonState(scrabbleLayoutButton, currentBoardLayout === 'scrabble', !canChangeLayout);
+  setBoardLayoutButtonState(
+    wordsWithFriendsLayoutButton,
+    currentBoardLayout === 'words-with-friends',
+    !canChangeLayout,
+  );
+  if (resetButton) {
+    resetButton.disabled = resetDisabled;
+  }
+}
+
+function setBoardLayoutButtonState(
+  button: HTMLButtonElement,
+  active: boolean,
+  disabled: boolean,
+): void {
+  button.classList.toggle('options-layout-button--active', active);
+  button.disabled = disabled;
+}
+
 function requirePlayerId(): string | null {
   if (!hasPlayerId()) {
     setStatus('Waiting for a player id.');
@@ -928,6 +1053,21 @@ function submitPlayTurn(): void {
     handState: hand.getHandState(),
     boardState: board.getBoardState(),
   });
+}
+
+function requestBoardLayout(layout: BoardLayoutType): void {
+  if (!latestGameState || currentBoardLayout === layout) {
+    hideOptionsMenu();
+    return;
+  }
+  const playerId = requirePlayerId();
+  if (!playerId) return;
+  sendMessageToServer({
+    type: 'set_board_layout',
+    playerId,
+    layout,
+  });
+  hideOptionsMenu();
 }
 
 function connectSocket(): void {

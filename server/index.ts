@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { TILE_DISTRIBUTION } from '../shared/letters.ts';
 import type { Letter } from '../shared/letters.ts';
+import type { BoardLayoutType } from '../shared/boardBonuses.ts';
 import type { ClientMessage, ServerMessage } from '../shared/protocol.ts';
 import type {
   GameState,
@@ -63,6 +64,7 @@ export class GameRoom {
   private turnOrder: string[] = [];
   private currentTurnIndex = 0;
   private bag: Letter[];
+  private boardLayout: BoardLayoutType = 'scrabble';
   private nextTileNumber = 1;
   private teamScore = 0;
   private lastMove: LastMoveState = null;
@@ -155,7 +157,7 @@ export class GameRoom {
     if (!player) return 'Unknown player.';
     if (this.currentPlayerId() !== playerId) return 'It is not your turn.';
 
-    const result = validateMove(this.board, player.rack, boardState, dictionary.words);
+    const result = validateMove(this.board, player.rack, boardState, dictionary.words, this.boardLayout);
     if (!result.ok) return result.reason;
     const playedIds = new Set(result.newTiles.map((tile) => tile.id));
     const rackStateReason = validateSubmittedRack(player.rack, handState, playedIds);
@@ -196,7 +198,7 @@ export class GameRoom {
       return { valid: false, words: [], totalScore: 0, reason: 'It is not your turn.' };
     }
 
-    const result = validateMove(this.board, player.rack, boardState, dictionary.words);
+    const result = validateMove(this.board, player.rack, boardState, dictionary.words, this.boardLayout);
     if (!result.ok) {
       return { valid: false, words: [], totalScore: 0, reason: result.reason };
     }
@@ -272,6 +274,15 @@ export class GameRoom {
       message: this.lastMove.message,
     });
     this.advanceTurn();
+    this.markChanged();
+    return null;
+  }
+
+  setBoardLayout(playerId: string, layout: BoardLayoutType): string | null {
+    if (!this.players.has(playerId)) return 'Unknown player.';
+    if (!this.canChangeBoardLayout()) return 'Board layout can only change before the first turn.';
+    if (this.boardLayout === layout) return null;
+    this.boardLayout = layout;
     this.markChanged();
     return null;
   }
@@ -354,6 +365,8 @@ export class GameRoom {
         },
       })),
       currentPlayerId: this.currentPlayerId(),
+      boardLayout: this.boardLayout,
+      canChangeBoardLayout: this.canChangeBoardLayout(),
       teamScore: this.teamScore,
       remainingTiles: this.bag.length,
       lastMove: this.lastMove,
@@ -380,6 +393,7 @@ export class GameRoom {
       turnOrder: [...this.turnOrder],
       currentTurnIndex: this.currentTurnIndex,
       bag: [...this.bag],
+      boardLayout: this.boardLayout,
       nextTileNumber: this.nextTileNumber,
       teamScore: this.teamScore,
       lastMove: this.lastMove,
@@ -412,6 +426,7 @@ export class GameRoom {
       ? 0
       : Math.max(0, Math.min(room.turnOrder.length - 1, state.currentTurnIndex));
     room.bag = [...state.bag];
+    room.boardLayout = state.boardLayout ?? 'scrabble';
     room.nextTileNumber = state.nextTileNumber;
     room.teamScore = state.teamScore;
     room.lastMove = state.lastMove;
@@ -461,6 +476,10 @@ export class GameRoom {
 
   private markChanged(): void {
     this.onChange?.();
+  }
+
+  private canChangeBoardLayout(): boolean {
+    return this.board.size === 0 && this.turnHistory.every((entry) => entry.kind === 'reset');
   }
 
   private returnRackToBag(player: Player): void {
@@ -568,6 +587,15 @@ function handleMessage(socket: LiveSocket, msg: ClientMessage): void {
     }
     case 'exchange_tiles': {
       const reason = room.exchangeTiles(msg.playerId, msg.tileIds);
+      if (reason) {
+        rejectTurn(socket, room, reason);
+      } else {
+        room.broadcastState();
+      }
+      break;
+    }
+    case 'set_board_layout': {
+      const reason = room.setBoardLayout(msg.playerId, msg.layout);
       if (reason) {
         rejectTurn(socket, room, reason);
       } else {
@@ -884,6 +912,11 @@ function isClientMessage(value: unknown): value is ClientMessage {
         Array.isArray(value.tileIds) &&
         value.tileIds.length <= RACK_SIZE &&
         value.tileIds.every((tileId) => typeof tileId === 'string')
+      );
+    case 'set_board_layout':
+      return (
+        typeof value.playerId === 'string' &&
+        (value.layout === 'scrabble' || value.layout === 'words-with-friends')
       );
     case 'reset_game':
       return typeof value.playerId === 'string';

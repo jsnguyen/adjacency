@@ -21,6 +21,15 @@ assert.equal(room.hasOpenSeat(), false);
 let state = room.snapshot();
 assert.equal(state.players.length, 2);
 assert.equal(state.remainingTiles, totalTiles - 14);
+assert.equal(state.boardLayout, 'scrabble');
+assert.equal(state.canChangeBoardLayout, true);
+
+const layoutReason = room.setBoardLayout(firstPlayer.id, 'words-with-friends');
+assert.equal(layoutReason, null);
+
+state = room.snapshot();
+assert.equal(state.boardLayout, 'words-with-friends');
+assert.equal(state.canChangeBoardLayout, true);
 
 const firstRackBefore = state.players.find((player) => player.id === firstPlayer.id)?.rack.tiles ?? [];
 assert.equal(firstRackBefore.length, 7);
@@ -33,6 +42,10 @@ state = room.snapshot();
 assert.equal(state.remainingTiles, totalTiles - 14);
 assert.equal(state.currentPlayerId, secondPlayer.id);
 assert.equal(state.turnHistory[0]?.kind, 'exchange');
+assert.equal(state.canChangeBoardLayout, false);
+
+const lateLayoutReason = room.setBoardLayout(firstPlayer.id, 'scrabble');
+assert.equal(lateLayoutReason, 'Board layout can only change before the first turn.');
 
 const firstRackAfter = state.players.find((player) => player.id === firstPlayer.id)?.rack.tiles ?? [];
 assert.equal(firstRackAfter.length, 7);
@@ -52,5 +65,7 @@ assert.equal(state.players[0]?.id, firstPlayer.id);
 assert.equal(state.currentPlayerId, firstPlayer.id);
 assert.equal(state.teamScore, 0);
 assert.equal(state.turnHistory[0]?.kind, 'reset');
+assert.equal(state.boardLayout, 'words-with-friends');
+assert.equal(state.canChangeBoardLayout, true);
 
 console.log('Game room tests passed.');

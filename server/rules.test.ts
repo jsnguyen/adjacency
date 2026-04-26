@@ -53,6 +53,18 @@ assert.deepEqual(firstMove.wordRuns[0].cells, [
 ]);
 assert.deepEqual(firstMove.wordRuns[0].anchor, { col: 9, row: 7 });
 
+const firstMoveWwf = validateMove(
+  new Map(),
+  rack,
+  board([tile('c', 'C', 7, 7), tile('a', 'A', 8, 7), tile('t', 'T', 9, 7)]),
+  words,
+  'words-with-friends',
+);
+expectOk(firstMoveWwf);
+assert.deepEqual(firstMoveWwf.words, ['CAT']);
+assert.equal(firstMoveWwf.score, 5);
+assert.equal(firstMoveWwf.wordRuns[0].score, 5);
+
 expectRejected(
   validateMove(
     new Map(),
