@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { buildWordSet, coordKey, validateMove } from './rules.ts';
+import { buildWordSet, coordKey, previewMove, validateMove } from './rules.ts';
 import type { LetterTileState, MoveValidationResult } from './rules.ts';
 
 const words = buildWordSet('CAT CATS AT AX AS ASK');
@@ -145,6 +145,17 @@ expectRejected(
   ),
   'rejects "CAT"',
 );
+
+const invalidPreview = previewMove(
+  new Map(),
+  rack,
+  board([tile('c', 'C', 7, 7), tile('a', 'A', 8, 7), tile('t', 'T', 9, 7)]),
+  buildWordSet('DOG'),
+);
+assert.equal(invalidPreview.valid, false);
+assert.equal(invalidPreview.totalScore, 10);
+assert.deepEqual(invalidPreview.words.map((word) => word.word), ['CAT']);
+assert.match(invalidPreview.reason ?? '', /CAT/);
 
 const committedCat = committedBoard([
   tile('c', 'C', 7, 7),

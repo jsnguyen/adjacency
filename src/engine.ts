@@ -306,57 +306,33 @@ if (playButton) {
       setStatus('Play at least one tile before submitting a turn.', 'error');
       return;
     }
-    showConfirmationModal({
-      title: 'Play turn?',
-      body: 'Submit the tiles currently on the board.',
-      confirmLabel: 'play',
-      confirmTone: 'play',
-      onConfirm: submitPlayTurn,
-    });
+    submitPlayTurn();
   })
 }
 
 passButton = document.getElementById('pass-button') as HTMLButtonElement | null;
 if (passButton) {
   passButton.addEventListener('click', () => {
-    if (!requirePlayerId()) return;
-    showConfirmationModal({
-      title: 'Pass turn?',
-      body: 'This ends your turn without playing a word.',
-      confirmLabel: 'pass',
-      confirmTone: 'pass',
-      onConfirm: () => {
-        const playerId = requirePlayerId();
-        if (!playerId) return;
-        sendMessageToServer({ type: 'pass_turn', playerId });
-      },
-    });
+    const playerId = requirePlayerId();
+    if (!playerId) return;
+    sendMessageToServer({ type: 'pass_turn', playerId });
   });
 }
 
 exchangeButton = document.getElementById('exchange-button') as HTMLButtonElement | null;
 if (exchangeButton) {
   exchangeButton.addEventListener('click', () => {
-    if (!requirePlayerId()) return;
+    const playerId = requirePlayerId();
+    if (!playerId) return;
     const tileIds = selectedHandTileIds();
     if (tileIds.length === 0) {
       setStatus('Select rack tiles to exchange.', 'error');
       return;
     }
-    showConfirmationModal({
-      title: 'Exchange tiles?',
-      body: `Exchange ${tileIds.length} selected tile${tileIds.length === 1 ? '' : 's'} for new ones from the bag.`,
-      confirmLabel: 'exchange',
-      confirmTone: 'exchange',
-      onConfirm: () => {
-        const playerId = requirePlayerId();
-        if (!playerId) return;
-        sendMessageToServer({
-          type: 'exchange_tiles',
-          playerId,
-          tileIds,
-        });
-      },
+    sendMessageToServer({
+      type: 'exchange_tiles',
+      playerId,
+      tileIds,
     });
   });
 }
@@ -744,18 +720,20 @@ function requestMovePreview(requestId: number): void {
 function applyMovePreview(preview: MovePreviewState): void {
   clearMovePreviewMarks();
 
-  if (!preview.valid || preview.words.length === 0) {
+  if (preview.words.length === 0) {
     previewLayer.replaceChildren();
     return;
   }
 
-  const highlightedCoords = new Set(
-    preview.words.flatMap((word) => word.cells.map((cell) => `${cell.col}:${cell.row}`)),
-  );
+  if (preview.valid) {
+    const highlightedCoords = new Set(
+      preview.words.flatMap((word) => word.cells.map((cell) => `${cell.col}:${cell.row}`)),
+    );
 
-  for (const tile of board.tiles) {
-    if (highlightedCoords.has(`${tile.col}:${tile.row}`)) {
-      tile.el.classList.add('preview-valid');
+    for (const tile of board.tiles) {
+      if (highlightedCoords.has(`${tile.col}:${tile.row}`)) {
+        tile.el.classList.add('preview-valid');
+      }
     }
   }
 
@@ -935,108 +913,47 @@ function renderHistoryWordBreakdown(wordScore: TurnWordScoreState): HTMLDivEleme
 
   const title = document.createElement('div');
   title.classList.add('history-word-breakdown__title');
-  title.textContent = `${wordScore.word} breakdown`;
+  title.textContent = historyWordFormula(wordScore);
   breakdown.appendChild(title);
 
-  const letters = document.createElement('div');
-  letters.classList.add('history-word-breakdown__section');
-
-  for (const letterScore of wordScore.letters) {
-    const row = document.createElement('div');
-    row.classList.add('history-word-breakdown__row');
-
-    const label = document.createElement('span');
-    label.classList.add('history-word-breakdown__label');
-    label.textContent = `${letterScore.letter} @ ${formatCellPosition(letterScore.col, letterScore.row)}`;
-
-    const value = document.createElement('span');
-    value.classList.add('history-word-breakdown__value');
-    value.textContent = `${letterScore.tileScore} pt${letterScore.tileScore === 1 ? '' : 's'}`;
-
-    const meta = document.createElement('div');
-    meta.classList.add('history-word-breakdown__meta');
-    meta.textContent = historyLetterMeta(letterScore);
-
-    row.append(label, value, meta);
-    letters.appendChild(row);
+  const bonusNote = historyWordBonusNote(wordScore);
+  if (bonusNote) {
+    const note = document.createElement('div');
+    note.classList.add('history-word-breakdown__note');
+    note.textContent = bonusNote;
+    breakdown.appendChild(note);
   }
-
-  breakdown.appendChild(letters);
-
-  const summary = document.createElement('div');
-  summary.classList.add('history-word-breakdown__summary');
-  const wordBonusLabel = wordScore.wordMultiplier > 1
-    ? `x${wordScore.wordMultiplier} word`
-    : 'no word bonus';
-  summary.textContent = `${wordScore.letterSubtotal} letter subtotal · ${wordBonusLabel} · ${wordScore.score} total`;
-  breakdown.appendChild(summary);
-
-  const bonusSection = document.createElement('div');
-  bonusSection.classList.add('history-word-breakdown__section');
-
-  if (wordScore.wordBonuses.length === 0) {
-    const bonusRow = document.createElement('div');
-    bonusRow.classList.add('history-word-breakdown__row');
-    const bonusLabel = document.createElement('span');
-    bonusLabel.classList.add('history-word-breakdown__label');
-    bonusLabel.textContent = 'Word bonus';
-    const bonusValue = document.createElement('span');
-    bonusValue.classList.add('history-word-breakdown__value');
-    bonusValue.textContent = 'none';
-    bonusRow.append(bonusLabel, bonusValue);
-    bonusSection.appendChild(bonusRow);
-  } else {
-    for (const bonus of wordScore.wordBonuses) {
-      const bonusRow = document.createElement('div');
-      bonusRow.classList.add('history-word-breakdown__row');
-
-      const bonusLabel = document.createElement('span');
-      bonusLabel.classList.add('history-word-breakdown__label');
-      bonusLabel.textContent = `${premiumSquareLabel(bonus.premium)} @ ${formatCellPosition(bonus.col, bonus.row)}`;
-
-      const bonusValue = document.createElement('span');
-      bonusValue.classList.add('history-word-breakdown__value');
-      bonusValue.textContent = `x${bonus.multiplier}`;
-
-      bonusRow.append(bonusLabel, bonusValue);
-      bonusSection.appendChild(bonusRow);
-    }
-  }
-
-  breakdown.appendChild(bonusSection);
   return breakdown;
 }
 
-function historyLetterMeta(letterScore: TurnWordScoreState['letters'][number]): string {
-  const parts = [`base ${letterScore.baseScore}`];
-  if (!letterScore.isNewTile) {
-    parts.push('existing tile');
-    return parts.join(' · ');
-  }
-  if (letterScore.appliedMultiplier > 1) {
-    parts.push(`${premiumSquareLabel(letterScore.premium)} x${letterScore.appliedMultiplier}`);
-  } else {
-    parts.push('no tile bonus');
-  }
-  return parts.join(' · ');
+function historyWordFormula(wordScore: TurnWordScoreState): string {
+  const terms = wordScore.letters.map((letterScore) => historyFormulaTerm(letterScore));
+  const base = `${wordScore.word} = (${terms.join(' + ')})`;
+  return wordScore.wordMultiplier > 1 ? `${base} x ${wordScore.wordMultiplier}` : base;
 }
 
 function historyWordBreakdownText(wordScore: TurnWordScoreState): string {
-  const letterLines = wordScore.letters.map((letterScore) => (
-    `${letterScore.letter} @ ${formatCellPosition(letterScore.col, letterScore.row)}: `
-    + `${letterScore.tileScore} (${historyLetterMeta(letterScore)})`
+  const note = historyWordBonusNote(wordScore);
+  return note ? `${historyWordFormula(wordScore)}\n${note}` : historyWordFormula(wordScore);
+}
+
+function historyFormulaTerm(letterScore: TurnWordScoreState['letters'][number]): string {
+  if (
+    letterScore.isNewTile &&
+    letterScore.appliedMultiplier > 1 &&
+    (letterScore.premium === 'double-letter' || letterScore.premium === 'triple-letter')
+  ) {
+    return `${letterScore.appliedMultiplier}x${letterScore.baseScore}`;
+  }
+  return `${letterScore.baseScore}`;
+}
+
+function historyWordBonusNote(wordScore: TurnWordScoreState): string {
+  if (wordScore.wordBonuses.length === 0) return '';
+  const bonuses = wordScore.wordBonuses.map((bonus) => (
+    `${premiumSquareLabel(bonus.premium)} @ ${formatCellPosition(bonus.col, bonus.row)}`
   ));
-  const wordBonusLines = wordScore.wordBonuses.length === 0
-    ? ['Word bonus: none']
-    : wordScore.wordBonuses.map((bonus) => (
-      `Word bonus: ${premiumSquareLabel(bonus.premium)} x${bonus.multiplier} @ ${formatCellPosition(bonus.col, bonus.row)}`
-    ));
-  return [
-    `${wordScore.word} breakdown`,
-    ...letterLines,
-    ...wordBonusLines,
-    `Total: ${wordScore.letterSubtotal} x ${wordScore.wordMultiplier} = ${wordScore.score}`,
-  ].join('\n');
+  return `word bonus: ${bonuses.join(', ')}`;
 }
 
 function formatCellPosition(col: number, row: number): string {
@@ -1073,7 +990,6 @@ function generateRoomId(): string {
 function setStatus(message: string, tone: 'normal' | 'error' = 'normal'): void {
   void message;
   if (statusScoreCard) {
-    statusScoreCard.classList.toggle('status-score--error', tone === 'error');
     if (tone === 'error') {
       flashElement(statusScoreCard, 'status-score--shake');
     }
@@ -1267,6 +1183,9 @@ function connectSocket(): void {
         waitingForServer = false;
         setStatus(msg.reason, 'error');
         updateActionButtons();
+        if (hasPendingBoardTiles()) {
+          scheduleMovePreview();
+        }
         break;
       case 'error':
         waitingForServer = false;

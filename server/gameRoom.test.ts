@@ -71,7 +71,8 @@ assert.equal(state.players.length, 1);
 assert.equal(state.players[0]?.id, firstPlayer.id);
 assert.equal(state.currentPlayerId, firstPlayer.id);
 assert.equal(state.teamScore, 0);
-assert.equal(state.turnHistory[0]?.kind, 'reset');
+assert.equal(state.turnHistory.length, 0);
+assert.equal(state.lastMove, null);
 assert.equal(state.boardLayout, 'words-with-friends');
 assert.equal(state.canChangeBoardLayout, true);
 

@@ -24,6 +24,7 @@ import {
   BOARD_ROWS,
   RACK_SIZE,
   coordKey,
+  previewMove,
   validateMove,
 } from './rules.ts';
 import type { LetterTileState } from './rules.ts';
@@ -198,23 +199,29 @@ export class GameRoom {
       return { valid: false, words: [], totalScore: 0, reason: 'It is not your turn.' };
     }
 
-    const result = validateMove(this.board, player.rack, boardState, dictionary.words, this.boardLayout);
-    if (!result.ok) {
-      return { valid: false, words: [], totalScore: 0, reason: result.reason };
+    const preview = previewMove(this.board, player.rack, boardState, dictionary.words, this.boardLayout);
+    if (preview.words.length === 0 && !preview.valid) {
+      return preview;
     }
 
-    const playedIds = new Set(result.newTiles.map((tile) => tile.id));
+    const rackIds = new Set(player.rack.map((tile) => tile.id));
+    const committedIds = new Set([...this.board.values()].map((tile) => tile.id));
+    const playedIds = new Set(
+      boardState.tiles
+        .map((tile) => tile.id)
+        .filter((tileId) => rackIds.has(tileId) && !committedIds.has(tileId)),
+    );
     const rackStateReason = validateSubmittedRack(player.rack, handState, playedIds);
     if (rackStateReason) {
-      return { valid: false, words: [], totalScore: 0, reason: rackStateReason };
+      return {
+        valid: false,
+        words: preview.words,
+        totalScore: preview.totalScore,
+        reason: rackStateReason,
+      };
     }
 
-    return {
-      valid: true,
-      words: result.wordRuns,
-      totalScore: result.score,
-      reason: null,
-    };
+    return preview;
   }
 
   passTurn(playerId: string): string | null {
@@ -298,12 +305,7 @@ export class GameRoom {
     this.teamScore = 0;
     this.turnHistory = [];
     this.nextTurnNumber = 1;
-    this.lastMove = {
-      playerId,
-      words: [],
-      score: 0,
-      message: 'Reset the game.',
-    };
+    this.lastMove = null;
     this.turnOrder = [playerId];
     this.currentTurnIndex = 0;
 
@@ -314,13 +316,6 @@ export class GameRoom {
     resetPlayer.rack = [];
     this.drawRack(resetPlayer);
 
-    this.recordTurn({
-      playerId,
-      kind: 'reset',
-      words: [],
-      totalScore: 0,
-      message: 'Reset the game.',
-    });
     this.markChanged();
     return { ok: true, evictedPlayers };
   }
@@ -540,9 +535,9 @@ function send(socket: WebSocket | null | undefined, msg: ServerMessage): void {
   }
 }
 
-function rejectTurn(socket: WebSocket, room: GameRoom, reason: string): void {
+function rejectTurn(socket: WebSocket, _room: GameRoom, reason: string): void {
   send(socket, { type: 'turn_rejected', reason });
-  room.sendState(socket);
+  void _room;
 }
 
 function handleMessage(socket: LiveSocket, msg: ClientMessage): void {

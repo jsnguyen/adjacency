@@ -46,6 +46,7 @@ export function makeDraggable(tile: Tile, hand: Hand, board: Board, onChange?: (
     el.style.top = coords.y + 'px';
     el.classList.remove('dragging');
     el.style.cursor = 'grab';
+    tile.animatePlacement();
     drag = null;
     onChange?.();
   };
@@ -117,6 +118,7 @@ export function makeDraggable(tile: Tile, hand: Hand, board: Board, onChange?: (
     drag = null;
     el.classList.remove('dragging');
     el.style.cursor = 'grab';
+    tile.animatePlacement();
     onChange?.();
 
   }, ac);

@@ -91,4 +91,10 @@ export class Tile {
     this.value = LETTER_VALUES[letter] || 0;
   }
 
+  animatePlacement() {
+    this.el.classList.remove('tile-drop');
+    void this.el.offsetWidth;
+    this.el.classList.add('tile-drop');
+  }
+
 }

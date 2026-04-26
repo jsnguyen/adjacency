@@ -7,6 +7,7 @@ import {
   wordMultiplierAt,
 } from '../shared/boardBonuses.ts';
 import type {
+  MovePreviewState,
   PreviewCellState,
   PreviewWordState,
   TileHolderState,
@@ -49,6 +50,15 @@ type ScoreBreakdown = {
   score: number;
 };
 
+type AnalyzedMove = {
+  newTiles: LetterTileState[];
+  words: string[];
+  score: number;
+  wordRuns: PreviewWordState[];
+  invalidWords: string[];
+  closedSquares: ClosedSquare[];
+};
+
 export function coordKey(col: number, row: number): string {
   return `${col}:${row}`;
 }
@@ -70,6 +80,56 @@ export function validateMove(
   allowedWords: Set<string>,
   boardLayout: BoardLayoutType = 'scrabble',
 ): MoveValidationResult {
+  const analyzedMove = analyzeMove(committedBoard, playerRack, submittedBoard, allowedWords, boardLayout);
+  if (!analyzedMove.ok) return analyzedMove;
+
+  if (analyzedMove.invalidWords.length > 0 || analyzedMove.closedSquares.length > 0) {
+    return {
+      ok: false,
+      reason: invalidMoveReason(analyzedMove.words, analyzedMove.invalidWords, analyzedMove.closedSquares),
+    };
+  }
+
+  return {
+    ok: true,
+    newTiles: analyzedMove.newTiles,
+    words: analyzedMove.words,
+    score: analyzedMove.score,
+    wordRuns: analyzedMove.wordRuns,
+  };
+}
+
+export function previewMove(
+  committedBoard: Map<string, LetterTileState>,
+  playerRack: LetterTileState[],
+  submittedBoard: TileHolderState,
+  allowedWords: Set<string>,
+  boardLayout: BoardLayoutType = 'scrabble',
+): MovePreviewState {
+  const analyzedMove = analyzeMove(committedBoard, playerRack, submittedBoard, allowedWords, boardLayout);
+  if (!analyzedMove.ok) {
+    return { valid: false, words: [], totalScore: 0, reason: analyzedMove.reason };
+  }
+
+  const reason = analyzedMove.invalidWords.length > 0 || analyzedMove.closedSquares.length > 0
+    ? invalidMoveReason(analyzedMove.words, analyzedMove.invalidWords, analyzedMove.closedSquares)
+    : null;
+
+  return {
+    valid: reason === null,
+    words: analyzedMove.wordRuns,
+    totalScore: analyzedMove.score,
+    reason,
+  };
+}
+
+function analyzeMove(
+  committedBoard: Map<string, LetterTileState>,
+  playerRack: LetterTileState[],
+  submittedBoard: TileHolderState,
+  allowedWords: Set<string>,
+  boardLayout: BoardLayoutType,
+): ({ ok: true } & AnalyzedMove) | { ok: false; reason: string } {
   const submittedTiles = normaliseSubmittedTiles(submittedBoard);
   if (!submittedTiles.ok) return submittedTiles;
 
@@ -131,16 +191,14 @@ export function validateMove(
 
   const invalidWords = words.filter((word) => !isWordAllowed(word, allowedWords));
   const closedSquares = collectNewClosedSquares(committedBoard, proposedBoard);
-  if (invalidWords.length > 0 || closedSquares.length > 0) {
-    return { ok: false, reason: invalidMoveReason(words, invalidWords, closedSquares) };
-  }
-
   const score = wordRuns.reduce((total, run) => total + run.score, 0);
   return {
     ok: true,
     newTiles,
     words,
     score,
+    invalidWords,
+    closedSquares,
     wordRuns: wordRuns.map((run) => ({
       kind: run.kind,
       word: run.word,
