@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { buildWordSet, coordKey, validateMove } from './rules.ts';
 import type { LetterTileState, MoveValidationResult } from './rules.ts';
 
-const words = buildWordSet('CAT CATS AT AX');
+const words = buildWordSet('CAT CATS AT AX AS ASK');
 
 function tile(id: string, letter: LetterTileState['letter'], col: number, row: number): LetterTileState {
   return { id, letter, col, row };
@@ -62,7 +62,17 @@ expectRejected(
     board([tile('c', 'C', 7, 7), tile('a', 'A', 8, 7), tile('t', 'T', 9, 7)]),
     buildWordSet('DOG'),
   ),
-  'word list',
+  'makes "CAT"',
+);
+
+expectRejected(
+  validateMove(
+    new Map(),
+    rack,
+    board([tile('c', 'C', 7, 7), tile('a', 'A', 8, 7), tile('t', 'T', 9, 7)]),
+    buildWordSet('DOG'),
+  ),
+  'rejects "CAT"',
 );
 
 const committedCat = committedBoard([
@@ -84,6 +94,68 @@ const pluralMove = validateMove(
 );
 expectOk(pluralMove);
 assert.deepEqual(pluralMove.words, ['CATS']);
+
+const pluralHookMove = validateMove(
+  committedBoard([
+    tile('c', 'C', 7, 7),
+    tile('a', 'A', 8, 7),
+    tile('t', 'T', 9, 7),
+    tile('a2', 'A', 10, 6),
+    tile('k', 'K', 10, 8),
+  ]),
+  [tile('s', 'S', 0, 0)],
+  board([
+    tile('c', 'C', 7, 7),
+    tile('a', 'A', 8, 7),
+    tile('t', 'T', 9, 7),
+    tile('a2', 'A', 10, 6),
+    tile('k', 'K', 10, 8),
+    tile('s', 'S', 10, 7),
+  ]),
+  words,
+);
+expectOk(pluralHookMove);
+assert.deepEqual(pluralHookMove.words, ['CATS', 'ASK']);
+
+const multipleWordMove = validateMove(
+  committedBoard([
+    tile('c', 'C', 7, 7),
+    tile('a', 'A', 8, 7),
+    tile('t', 'T', 9, 7),
+    tile('a2', 'A', 10, 6),
+  ]),
+  [tile('s', 'S', 0, 0)],
+  board([
+    tile('c', 'C', 7, 7),
+    tile('a', 'A', 8, 7),
+    tile('t', 'T', 9, 7),
+    tile('a2', 'A', 10, 6),
+    tile('s', 'S', 10, 7),
+  ]),
+  words,
+);
+expectOk(multipleWordMove);
+assert.deepEqual(multipleWordMove.words, ['CATS', 'AS']);
+
+const invalidCrossWordMove = validateMove(
+  committedBoard([
+    tile('c', 'C', 7, 7),
+    tile('a', 'A', 8, 7),
+    tile('t', 'T', 9, 7),
+    tile('a2', 'A', 10, 6),
+  ]),
+  [tile('s', 'S', 0, 0)],
+  board([
+    tile('c', 'C', 7, 7),
+    tile('a', 'A', 8, 7),
+    tile('t', 'T', 9, 7),
+    tile('a2', 'A', 10, 6),
+    tile('s', 'S', 10, 7),
+  ]),
+  buildWordSet('CATS'),
+);
+expectRejected(invalidCrossWordMove, 'makes "CATS", "AS"');
+expectRejected(invalidCrossWordMove, 'rejects "AS"');
 
 expectRejected(
   validateMove(
@@ -124,5 +196,27 @@ expectRejected(
   ),
   'gaps',
 );
+
+const closedSquareMove = validateMove(
+  committedBoard([
+    tile('n', 'A', 8, 7),
+    tile('s', 'T', 8, 9),
+    tile('w', 'C', 7, 8),
+    tile('v1', 'C', 9, 7),
+    tile('v2', 'T', 9, 9),
+  ]),
+  [tile('m', 'A', 0, 0)],
+  board([
+    tile('n', 'A', 8, 7),
+    tile('s', 'T', 8, 9),
+    tile('w', 'C', 7, 8),
+    tile('v1', 'C', 9, 7),
+    tile('v2', 'T', 9, 9),
+    tile('m', 'A', 9, 8),
+  ]),
+  words,
+);
+expectRejected(closedSquareMove, 'closed square');
+expectRejected(closedSquareMove, '\\(8,8\\)');
 
 console.log('Rule tests passed.');

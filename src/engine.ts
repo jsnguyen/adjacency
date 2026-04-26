@@ -4,6 +4,7 @@ import type { GameState, PlayerPublicState, TileHolderState, TileState } from '.
 import { Actions } from './actions.ts'
 import { Board } from './board.ts'
 import { Hand } from './hand.ts'
+import { readSessionCookie, writeSessionCookie } from './sessionCookie.ts'
 import { Tile } from './tile.ts'
 import { makeDraggable } from './draggable.ts'
 import { setPlayerId, getPlayerId, hasPlayerId } from './clientState.ts'; // kinda like globals
@@ -24,7 +25,9 @@ let passButton: HTMLButtonElement | null = null;
 let exchangeButton: HTMLButtonElement | null = null;
 let shuffleButton: HTMLButtonElement | null = null;
 let recallButton: HTMLButtonElement | null = null;
+let resetButton: HTMLButtonElement | null = null;
 let selectedExchangeIds = new Set<string>();
+let resetModal: HTMLDivElement;
 
 connectSocket();
 
@@ -85,6 +88,27 @@ let hand = new Hand(bottomBar);
 const buttonLabels = ['recall', 'shuffle', 'exchange', 'pass', 'play'];
 new Actions(bottomBar, buttonLabels);
 
+resetButton = document.createElement('button');
+resetButton.classList.add('action-button', 'action-button--reset');
+resetButton.id = 'reset-button';
+resetButton.textContent = 'reset';
+document.querySelector('.actions')?.appendChild(resetButton);
+
+resetModal = document.createElement('div');
+resetModal.classList.add('modal-backdrop');
+resetModal.hidden = true;
+resetModal.innerHTML = `
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="reset-title">
+    <h2 id="reset-title">Reset game?</h2>
+    <p>This clears the board, reshuffles the bag, and redeals every rack in the room.</p>
+    <div class="modal-actions">
+      <button type="button" id="reset-cancel-button" class="action-button action-button--secondary">cancel</button>
+      <button type="button" id="reset-confirm-button" class="action-button action-button--reset">reset</button>
+    </div>
+  </div>
+`;
+document.body.appendChild(resetModal);
+
 shuffleButton = document.getElementById('shuffle-button') as HTMLButtonElement | null;
 if (shuffleButton) {
   shuffleButton.addEventListener('click', () => {
@@ -140,6 +164,46 @@ if (exchangeButton) {
   });
 }
 
+resetButton = document.getElementById('reset-button') as HTMLButtonElement | null;
+if (resetButton) {
+  resetButton.addEventListener('click', () => {
+    if (!hasPlayerId()) {
+      setStatus('Waiting for a player id.');
+      return;
+    }
+    showResetModal();
+  });
+}
+
+const resetCancelButton = document.getElementById('reset-cancel-button') as HTMLButtonElement | null;
+if (resetCancelButton) {
+  resetCancelButton.addEventListener('click', hideResetModal);
+}
+
+const resetConfirmButton = document.getElementById('reset-confirm-button') as HTMLButtonElement | null;
+if (resetConfirmButton) {
+  resetConfirmButton.addEventListener('click', () => {
+    if (!hasPlayerId()) {
+      setStatus('Waiting for a player id.');
+      return;
+    }
+    hideResetModal();
+    sendMessageToServer({ type: 'reset_game', playerId: getPlayerId() });
+  });
+}
+
+resetModal.addEventListener('click', (event) => {
+  if (event.target === resetModal) {
+    hideResetModal();
+  }
+});
+
+window.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !resetModal.hidden) {
+    hideResetModal();
+  }
+});
+
 //
 // make background tiles
 //
@@ -163,6 +227,7 @@ updateActionButtons();
 
 function syncGameState(state: GameState): void {
   latestGameState = state;
+  writeSessionCookie({ roomId: state.roomId });
   selectedExchangeIds = new Set();
   const player = currentPlayer(state);
   const isMyTurn = Boolean(player && state.currentPlayerId === player.id);
@@ -235,7 +300,7 @@ function updateActionButtons(): void {
   const isMyTurn = Boolean(player && latestGameState?.currentPlayerId === player.id);
   const baseDisabled = waitingForServer || !isMyTurn || !socketIsOpen();
 
-  for (const button of [playButton, passButton, shuffleButton, recallButton]) {
+  for (const button of [playButton, passButton, shuffleButton, recallButton, resetButton]) {
     if (button) button.disabled = baseDisabled;
   }
 
@@ -347,6 +412,11 @@ function connectSocket(): void {
     switch (msg.type) {
       case 'player_id':
         setPlayerId(msg.playerId);
+        writeSessionCookie({
+          playerId: msg.playerId,
+          roomId: msg.roomId,
+          sessionId: msg.sessionId,
+        });
         break;
       case 'game_state':
         waitingForServer = false;
@@ -355,6 +425,7 @@ function connectSocket(): void {
       case 'turn_rejected':
         waitingForServer = false;
         setStatus(msg.reason, 'error');
+        moveBar.textContent = msg.reason;
         updateActionButtons();
         break;
       case 'error':
@@ -382,12 +453,31 @@ function socketIsOpen(): boolean {
 
 function webSocketUrl(): string {
   const configuredUrl = import.meta.env.VITE_ADJACENCY_WS_URL as string | undefined;
-  if (configuredUrl) return configuredUrl;
+  const { roomId, sessionId } = readSessionCookie();
+  const query = new URLSearchParams();
+  if (roomId) query.set('room', roomId);
+  if (sessionId) query.set('session', sessionId);
+
+  if (configuredUrl) {
+    const url = new URL(configuredUrl, window.location.href);
+    query.forEach((value, key) => url.searchParams.set(key, value));
+    return url.toString();
+  }
 
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const isViteDevServer = ['5173', '4173'].includes(window.location.port);
-  if (isViteDevServer) {
-    return `${protocol}//${window.location.hostname}:8080/ws`;
-  }
-  return `${protocol}//${window.location.host}/ws`;
+  const baseUrl = isViteDevServer
+    ? `${protocol}//${window.location.hostname}:8080/ws`
+    : `${protocol}//${window.location.host}/ws`;
+  const url = new URL(baseUrl);
+  query.forEach((value, key) => url.searchParams.set(key, value));
+  return url.toString();
+}
+
+function showResetModal(): void {
+  resetModal.hidden = false;
+}
+
+function hideResetModal(): void {
+  resetModal.hidden = true;
 }

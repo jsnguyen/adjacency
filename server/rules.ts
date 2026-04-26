@@ -19,6 +19,11 @@ type WordRun = {
   word: string;
 };
 
+type ClosedSquare = {
+  col: number;
+  row: number;
+};
+
 export function coordKey(col: number, row: number): string {
   return `${col}:${row}`;
 }
@@ -97,10 +102,10 @@ export function validateMove(
     return { ok: false, reason: 'Every submitted turn must form at least one word.' };
   }
 
-  for (const word of words) {
-    if (!isWordAllowed(word, allowedWords)) {
-      return { ok: false, reason: `"${word}" is not in the configured word list.` };
-    }
+  const invalidWords = words.filter((word) => !isWordAllowed(word, allowedWords));
+  const closedSquares = collectNewClosedSquares(committedBoard, proposedBoard);
+  if (invalidWords.length > 0 || closedSquares.length > 0) {
+    return { ok: false, reason: invalidMoveReason(words, invalidWords, closedSquares) };
   }
 
   const score = words.reduce((total, word) => total + scoreWord(word), 0);
@@ -263,6 +268,70 @@ function collectWordRun(
 
   const key = `${startCol}:${startRow}:${endCol - deltaCol}:${endRow - deltaRow}`;
   return { key, word: letters.join('') };
+}
+
+function collectNewClosedSquares(
+  committedBoard: Map<string, LetterTileState>,
+  proposedBoard: Map<string, LetterTileState>,
+): ClosedSquare[] {
+  const existingSquares = new Set(
+    collectClosedSquares(committedBoard).map((square) => coordKey(square.col, square.row)),
+  );
+
+  return collectClosedSquares(proposedBoard).filter(
+    (square) => !existingSquares.has(coordKey(square.col, square.row)),
+  );
+}
+
+function collectClosedSquares(board: Map<string, LetterTileState>): ClosedSquare[] {
+  const squares: ClosedSquare[] = [];
+
+  for (let row = 1; row < BOARD_ROWS - 1; row += 1) {
+    for (let col = 1; col < BOARD_COLS - 1; col += 1) {
+      if (board.has(coordKey(col, row))) continue;
+
+      if (
+        board.has(coordKey(col, row - 1)) &&
+        board.has(coordKey(col, row + 1)) &&
+        board.has(coordKey(col - 1, row)) &&
+        board.has(coordKey(col + 1, row))
+      ) {
+        squares.push({ col, row });
+      }
+    }
+  }
+
+  return squares;
+}
+
+function invalidMoveReason(
+  words: string[],
+  invalidWords: string[],
+  closedSquares: ClosedSquare[],
+): string {
+  const messages: string[] = [];
+
+  if (words.length > 0) {
+    messages.push(`This move makes ${formatWordList(words)}.`);
+  }
+  if (invalidWords.length > 0) {
+    messages.push(`The dictionary rejects ${formatWordList(invalidWords)}.`);
+  }
+  if (closedSquares.length > 0) {
+    messages.push(
+      `It creates ${closedSquares.length === 1 ? 'a closed square' : 'closed squares'} at ${formatClosedSquares(closedSquares)}.`,
+    );
+  }
+
+  return messages.join(' ');
+}
+
+function formatWordList(words: string[]): string {
+  return words.map((word) => `"${word}"`).join(', ');
+}
+
+function formatClosedSquares(closedSquares: ClosedSquare[]): string {
+  return closedSquares.map((square) => `(${square.col},${square.row})`).join(', ');
 }
 
 function isWordAllowed(word: string, allowedWords: Set<string>): boolean {

@@ -31,10 +31,14 @@ const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
 const rooms = new Map<string, GameRoom>();
 const socketAssignments = new Map<WebSocket, { room: GameRoom; playerId: string }>();
 const heartbeatIntervalMs = 30_000;
+const disconnectGraceMs = 5 * 60_000;
+const sessionAssignments = new Map<string, { roomId: string; playerId: string }>();
+const disconnectTimers = new Map<string, NodeJS.Timeout>();
 
 type Player = {
   id: string;
-  socket: LiveSocket;
+  sessionId: string;
+  socket: LiveSocket | null;
   rack: LetterTileState[];
   connected: boolean;
 };
@@ -59,9 +63,10 @@ class GameRoom {
     this.bag = shuffle(createBag());
   }
 
-  addPlayer(socket: LiveSocket): Player {
+  addPlayer(socket: LiveSocket, sessionId: string): Player {
     const player: Player = {
       id: randomUUID(),
+      sessionId,
       socket,
       rack: [],
       connected: true,
@@ -96,6 +101,34 @@ class GameRoom {
 
   isEmpty(): boolean {
     return this.players.size === 0;
+  }
+
+  getPlayer(playerId: string): Player | undefined {
+    return this.players.get(playerId);
+  }
+
+  reconnectPlayer(playerId: string, socket: LiveSocket): Player | null {
+    const player = this.players.get(playerId);
+    if (!player) return null;
+
+    if (player.socket && player.socket !== socket) {
+      socketAssignments.delete(player.socket);
+      player.socket.close(1000, 'Session resumed in a new tab.');
+    }
+
+    player.socket = socket;
+    player.connected = true;
+    return player;
+  }
+
+  disconnectPlayer(playerId: string): Player | null {
+    const player = this.players.get(playerId);
+    if (!player) return null;
+
+    player.connected = false;
+    player.socket = null;
+    this.broadcastState();
+    return player;
   }
 
   playTurn(playerId: string, boardState: TileHolderState, handState: TileHolderState): string | null {
@@ -168,6 +201,28 @@ class GameRoom {
       message: `Exchanged ${uniqueTileIds.length} tile${uniqueTileIds.length === 1 ? '' : 's'}.`,
     };
     this.advanceTurn();
+    return null;
+  }
+
+  resetGame(playerId: string): string | null {
+    if (!this.players.has(playerId)) return 'Unknown player.';
+
+    this.board.clear();
+    this.bag = shuffle(createBag());
+    this.teamScore = 0;
+    this.lastMove = {
+      playerId,
+      words: [],
+      score: 0,
+      message: 'Reset the game.',
+    };
+    this.currentTurnIndex = 0;
+
+    for (const player of this.players.values()) {
+      player.rack = [];
+      this.drawRack(player);
+    }
+
     return null;
   }
 
@@ -273,7 +328,7 @@ function getRoom(roomId: string): GameRoom {
   return room;
 }
 
-function joinRoom(socket: LiveSocket, roomId: string): void {
+function joinRoom(socket: LiveSocket, roomId: string, requestedSessionId?: string): void {
   const normalisedRoomId = normaliseRoomId(roomId);
   if (!normalisedRoomId) {
     send(socket, { type: 'error', msg: 'Room names can use letters, numbers, underscores, and dashes only.' });
@@ -281,10 +336,15 @@ function joinRoom(socket: LiveSocket, roomId: string): void {
   }
 
   leaveAssignedRoom(socket);
+  const reconnectPlayer = requestedSessionId ? reconnectExistingPlayer(socket, requestedSessionId) : null;
+  if (reconnectPlayer) return;
+
   const room = getRoom(normalisedRoomId);
-  const player = room.addPlayer(socket);
+  const sessionId = randomUUID();
+  const player = room.addPlayer(socket, sessionId);
+  sessionAssignments.set(sessionId, { roomId: room.id, playerId: player.id });
   socketAssignments.set(socket, { room, playerId: player.id });
-  send(socket, { type: 'player_id', playerId: player.id });
+  send(socket, { type: 'player_id', playerId: player.id, sessionId, roomId: room.id });
   room.broadcastState();
 }
 
@@ -293,14 +353,28 @@ function leaveAssignedRoom(socket: WebSocket): void {
   if (!assignment) return;
 
   socketAssignments.delete(socket);
-  assignment.room.removePlayer(assignment.playerId);
-  if (assignment.room.isEmpty()) {
-    rooms.delete(assignment.room.id);
+  const player = assignment.room.disconnectPlayer(assignment.playerId);
+  if (!player) return;
+
+  const existingTimer = disconnectTimers.get(player.sessionId);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
   }
+
+  const timer = setTimeout(() => {
+    disconnectTimers.delete(player.sessionId);
+    sessionAssignments.delete(player.sessionId);
+    assignment.room.removePlayer(player.id);
+    if (assignment.room.isEmpty()) {
+      rooms.delete(assignment.room.id);
+    }
+  }, disconnectGraceMs);
+  timer.unref();
+  disconnectTimers.set(player.sessionId, timer);
 }
 
-function send(socket: WebSocket, msg: ServerMessage): void {
-  if (socket.readyState === WebSocket.OPEN) {
+function send(socket: WebSocket | null | undefined, msg: ServerMessage): void {
+  if (socket && socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify(msg));
   }
 }
@@ -344,6 +418,15 @@ function handleMessage(socket: LiveSocket, msg: ClientMessage): void {
     }
     case 'exchange_tiles': {
       const reason = room.exchangeTiles(msg.playerId, msg.tileIds);
+      if (reason) {
+        rejectTurn(socket, room, reason);
+      } else {
+        room.broadcastState();
+      }
+      break;
+    }
+    case 'reset_game': {
+      const reason = room.resetGame(msg.playerId);
       if (reason) {
         rejectTurn(socket, room, reason);
       } else {
@@ -410,14 +493,17 @@ function validateSubmittedRack(
   return null;
 }
 
-wss.on('connection', (socket: WebSocket) => {
+wss.on('connection', (socket: WebSocket, request: IncomingMessage) => {
   const liveSocket = socket as LiveSocket;
   liveSocket.isAlive = true;
   liveSocket.on('pong', () => {
     liveSocket.isAlive = true;
   });
 
-  joinRoom(liveSocket, DEFAULT_ROOM_ID);
+  const requestUrl = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
+  const requestedRoomId = requestUrl.searchParams.get('room') ?? DEFAULT_ROOM_ID;
+  const requestedSessionId = requestUrl.searchParams.get('session') ?? undefined;
+  joinRoom(liveSocket, requestedRoomId, requestedSessionId);
 
   liveSocket.on('message', (raw) => {
     let msg: unknown;
@@ -604,6 +690,8 @@ function isClientMessage(value: unknown): value is ClientMessage {
         value.tileIds.length <= RACK_SIZE &&
         value.tileIds.every((tileId) => typeof tileId === 'string')
       );
+    case 'reset_game':
+      return typeof value.playerId === 'string';
     default:
       return false;
   }
@@ -646,4 +734,27 @@ function shutdown(signal: string): void {
   setTimeout(() => {
     process.exit(1);
   }, 5000).unref();
+}
+
+function reconnectExistingPlayer(socket: LiveSocket, sessionId: string): Player | null {
+  const assignment = sessionAssignments.get(sessionId);
+  if (!assignment) return null;
+
+  const room = rooms.get(assignment.roomId);
+  const player = room?.reconnectPlayer(assignment.playerId, socket);
+  if (!room || !player) {
+    sessionAssignments.delete(sessionId);
+    return null;
+  }
+
+  const existingTimer = disconnectTimers.get(sessionId);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+    disconnectTimers.delete(sessionId);
+  }
+
+  socketAssignments.set(socket, { room, playerId: player.id });
+  send(socket, { type: 'player_id', playerId: player.id, sessionId: player.sessionId, roomId: room.id });
+  room.broadcastState();
+  return player;
 }
