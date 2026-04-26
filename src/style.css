@@ -1,0 +1,116 @@
+
+body {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    user-select: none;
+    -webkit-user-select: none;
+    background-color: black;
+    font-family: "Arimo", sans-serif;
+    font-optical-sizing: auto;
+    font-weight: 400;
+    font-style: normal;
+}
+
+.container {
+    width: 670px;
+    background-color: black;
+}
+
+.header {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100px;
+    margin: 10px;
+    background-color: grey;
+}
+
+.board {
+    position: relative;
+    width: 100%;
+    border-radius: 4px;
+    background-color: #a1a1a1;
+}
+
+.tile {
+    position: absolute;
+    border-radius: 8px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.play-tile {
+    background-color: #f5e3c1;
+    z-index: 1;
+}
+
+.tile.snapping {
+  transition: left 0.1s ease-out, top 0.1s ease-out;
+}
+
+.tile-value {
+    position: absolute;
+    bottom: 0px;
+    right: 4px;
+    color: black;
+    font-size: 0.8em;
+    pointer-events: none;
+}
+
+.bg-tile {
+    pointer-events: none;
+    background-color: #cccccc;
+    border-radius: 0px;
+    contain: strict;
+    pointer-events: none;
+}
+
+.hand {
+    position: relative;
+    background-color: #a1a1a1;
+    border-radius: 4px;
+    display: flex;
+    flex-direction: row;
+    justify-content: center;
+    align-items: center;
+    margin-top: 10px;
+}
+
+#app {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}
+
+.actions {
+    display: flex;
+    flex-direction: row;
+    margin: 10px;
+    padding: 4px;
+    border-radius: 4px;
+    background-color: grey;
+}
+
+.action-button {
+    margin: 0px 5px;
+    padding: 5px 10px;
+    width: 40px;
+    height: 40px;
+    font-size: 0.8em;
+    border-radius: 4px;
+    background-color: #f5e3c1;
+    cursor: pointer;
+}
+
+.draggable {
+    will-change: transform;
+}
+
+.bottom-bar {
+    display: flex;
+    flex-direction: row;
+    justify-content: space-evenly;
+}

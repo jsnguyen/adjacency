@@ -1,0 +1,24 @@
+{
+  "name": "adjacency",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "server": "tsx server/index.ts",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.18.1",
+    "typescript": "~6.0.2",
+    "vite": "^8.0.10"
+  },
+  "dependencies": {
+    "node": "^24.15.0",
+    "tsx": "^4.21.0",
+    "ws": "^8.20.0",
+    "wss": "^0.0.2"
+  }
+}
