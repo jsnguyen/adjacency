@@ -65,6 +65,8 @@ export class GameRoom {
   private turnOrder: string[] = [];
   private currentTurnIndex = 0;
   private bag: Letter[];
+  private gameEnded = false;
+  private finalTurnsRemaining: number | null = null;
   private boardLayout: BoardLayoutType = 'scrabble';
   private nextTileNumber = 1;
   private teamScore = 0;
@@ -156,6 +158,7 @@ export class GameRoom {
   playTurn(playerId: string, boardState: TileHolderState, handState: TileHolderState): string | null {
     const player = this.players.get(playerId);
     if (!player) return 'Unknown player.';
+    if (this.gameEnded) return 'Game is over.';
     if (this.currentPlayerId() !== playerId) return 'It is not your turn.';
 
     const result = validateMove(this.board, player.rack, boardState, dictionary.words, this.boardLayout);
@@ -185,7 +188,7 @@ export class GameRoom {
       totalScore: result.score,
       message: this.lastMove.message,
     });
-    this.advanceTurn();
+    this.completeTurnCycle();
     this.markChanged();
     return null;
   }
@@ -194,6 +197,9 @@ export class GameRoom {
     const player = this.players.get(playerId);
     if (!player) {
       return { valid: false, words: [], totalScore: 0, reason: 'Unknown player.' };
+    }
+    if (this.gameEnded) {
+      return { valid: false, words: [], totalScore: 0, reason: 'Game is over.' };
     }
     if (this.currentPlayerId() !== playerId) {
       return { valid: false, words: [], totalScore: 0, reason: 'It is not your turn.' };
@@ -226,6 +232,7 @@ export class GameRoom {
 
   passTurn(playerId: string): string | null {
     if (!this.players.has(playerId)) return 'Unknown player.';
+    if (this.gameEnded) return 'Game is over.';
     if (this.currentPlayerId() !== playerId) return 'It is not your turn.';
 
     this.lastMove = {
@@ -241,7 +248,7 @@ export class GameRoom {
       totalScore: 0,
       message: 'Passed.',
     });
-    this.advanceTurn();
+    this.completeTurnCycle();
     this.markChanged();
     return null;
   }
@@ -249,6 +256,7 @@ export class GameRoom {
   exchangeTiles(playerId: string, tileIds: string[]): string | null {
     const player = this.players.get(playerId);
     if (!player) return 'Unknown player.';
+    if (this.gameEnded) return 'Game is over.';
     if (this.currentPlayerId() !== playerId) return 'It is not your turn.';
 
     const uniqueTileIds = [...new Set(tileIds)];
@@ -280,7 +288,7 @@ export class GameRoom {
       totalScore: 0,
       message: this.lastMove.message,
     });
-    this.advanceTurn();
+    this.completeTurnCycle();
     this.markChanged();
     return null;
   }
@@ -302,6 +310,8 @@ export class GameRoom {
 
     this.board.clear();
     this.bag = shuffle(createBag());
+    this.gameEnded = false;
+    this.finalTurnsRemaining = null;
     this.teamScore = 0;
     this.turnHistory = [];
     this.nextTurnNumber = 1;
@@ -332,7 +342,7 @@ export class GameRoom {
   }
 
   private currentPlayerId(): string | null {
-    if (this.turnOrder.length === 0) return null;
+    if (this.gameEnded || this.turnOrder.length === 0) return null;
     return this.turnOrder[this.currentTurnIndex] ?? this.turnOrder[0] ?? null;
   }
 
@@ -342,6 +352,22 @@ export class GameRoom {
       return;
     }
     this.currentTurnIndex = (this.currentTurnIndex + 1) % this.turnOrder.length;
+  }
+
+  private completeTurnCycle(): void {
+    const bagJustEmptied = this.bag.length === 0 && this.finalTurnsRemaining === null;
+
+    if (bagJustEmptied) {
+      this.finalTurnsRemaining = this.turnOrder.length;
+    } else if (this.finalTurnsRemaining !== null) {
+      this.finalTurnsRemaining = Math.max(0, this.finalTurnsRemaining - 1);
+      if (this.finalTurnsRemaining === 0) {
+        this.gameEnded = true;
+        return;
+      }
+    }
+
+    this.advanceTurn();
   }
 
   snapshot(): GameState {
@@ -360,6 +386,8 @@ export class GameRoom {
         },
       })),
       currentPlayerId: this.currentPlayerId(),
+      gameEnded: this.gameEnded,
+      finalTurnsRemaining: this.finalTurnsRemaining,
       boardLayout: this.boardLayout,
       canChangeBoardLayout: this.canChangeBoardLayout(),
       teamScore: this.teamScore,
@@ -388,6 +416,8 @@ export class GameRoom {
       turnOrder: [...this.turnOrder],
       currentTurnIndex: this.currentTurnIndex,
       bag: [...this.bag],
+      gameEnded: this.gameEnded,
+      finalTurnsRemaining: this.finalTurnsRemaining,
       boardLayout: this.boardLayout,
       nextTileNumber: this.nextTileNumber,
       teamScore: this.teamScore,
@@ -421,6 +451,8 @@ export class GameRoom {
       ? 0
       : Math.max(0, Math.min(room.turnOrder.length - 1, state.currentTurnIndex));
     room.bag = [...state.bag];
+    room.gameEnded = state.gameEnded ?? false;
+    room.finalTurnsRemaining = state.finalTurnsRemaining ?? null;
     room.boardLayout = state.boardLayout ?? 'scrabble';
     room.nextTileNumber = state.nextTileNumber;
     room.teamScore = state.teamScore;

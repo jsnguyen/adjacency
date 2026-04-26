@@ -8,6 +8,8 @@ import type { Hand } from './hand.ts'
 import type { Board } from './board.ts'
 import { Tile } from './tile.ts'
 
+export const DRAG_CANCEL_EVENT = 'adjacency:cancel-active-drag';
+
 
 //
 // drag/drop behavior
@@ -22,17 +24,19 @@ function withinBounds(clientX : number, clientY : number, tileHolder : Hand | Bo
 export function makeDraggable(tile: Tile, hand: Hand, board: Board, onChange?: () => void) {
 
   const el = tile.el;
+  const ac = new AbortController();
+  const listenerOptions = { signal: ac.signal };
 
   let drag: {
     pointerId: number;
-    offsetX: number;
-    offsetY: number;
+    screenOffsetX: number;
+    screenOffsetY: number;
+    holderOffsetX: number;
+    holderOffsetY: number;
     origin: Hand | Board;
     originCol: number;
     originRow: number;
   } | null = null;
-
-  const ac = new AbortController();
 
   const restoreToOrigin = () => {
     if (!drag) return;
@@ -53,10 +57,14 @@ export function makeDraggable(tile: Tile, hand: Hand, board: Board, onChange?: (
 
   el.addEventListener('pointerdown', (e) => {
     const rect = el.getBoundingClientRect();
+    const pointerCoords = clientToBoardCoords(e.clientX, e.clientY, tile.tileHolder);
+    const tileCoords = gridCoordsToTileHolderCoords(tile.col, tile.row, tile.tileHolder);
     drag = {
       pointerId: e.pointerId,
-      offsetX: e.clientX - rect.left,
-      offsetY: e.clientY - rect.top,
+      screenOffsetX: e.clientX - rect.left,
+      screenOffsetY: e.clientY - rect.top,
+      holderOffsetX: pointerCoords.x - tileCoords.x,
+      holderOffsetY: pointerCoords.y - tileCoords.y,
       origin: tile.tileHolder,
       originCol: tile.col,
       originRow: tile.row,
@@ -73,13 +81,13 @@ export function makeDraggable(tile: Tile, hand: Hand, board: Board, onChange?: (
 
     el.setPointerCapture(e.pointerId);
     el.style.cursor = 'grabbing';
-  }, ac);
+  }, listenerOptions);
 
   el.addEventListener('pointermove', (e) => {
     if (!drag || e.pointerId !== drag.pointerId) return;
-    el.style.left = (e.clientX - drag.offsetX) + 'px';
-    el.style.top  = (e.clientY - drag.offsetY) + 'px';
-  }, ac);
+    el.style.left = (e.clientX - drag.screenOffsetX) + 'px';
+    el.style.top  = (e.clientY - drag.screenOffsetY) + 'px';
+  }, listenerOptions);
 
   el.addEventListener('pointerup', (e) => {
     if (!drag || e.pointerId !== drag.pointerId) return;
@@ -92,8 +100,8 @@ export function makeDraggable(tile: Tile, hand: Hand, board: Board, onChange?: (
     }
 
     const p = clientToBoardCoords(e.clientX, e.clientY, finalTileHolder);
-    const tileX = p.x - drag.offsetX;
-    const tileY = p.y - drag.offsetY;
+    const tileX = p.x - drag.holderOffsetX;
+    const tileY = p.y - drag.holderOffsetY;
 
     const boardCoords = boardCoordsToGridCoords(tileX, tileY, finalTileHolder);
 
@@ -121,9 +129,10 @@ export function makeDraggable(tile: Tile, hand: Hand, board: Board, onChange?: (
     tile.animatePlacement();
     onChange?.();
 
-  }, ac);
+  }, listenerOptions);
 
-  el.addEventListener('pointercancel', restoreToOrigin, ac);
+  el.addEventListener('pointercancel', restoreToOrigin, listenerOptions);
+  document.addEventListener(DRAG_CANCEL_EVENT, restoreToOrigin, listenerOptions);
 
   return () => ac.abort();
 

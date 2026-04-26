@@ -100,6 +100,8 @@ export type GameState = {
   board: TileHolderState;
   players: PlayerPublicState[];
   currentPlayerId: string | null;
+  gameEnded: boolean;
+  finalTurnsRemaining: number | null;
   boardLayout: BoardLayoutType;
   canChangeBoardLayout: boolean;
   teamScore: number;

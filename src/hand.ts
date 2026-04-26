@@ -9,12 +9,14 @@ export class Hand {
   rows: number;
   tiles: Tile[];
   el: HTMLElement;
+  zoom: number;
 
   constructor(parent : HTMLElement, size = 7) {
     this.grid = { cols: size, rows: 1, pad: GRID.pad };
     this.cols = size;
     this.rows = 1;
     this.tiles = [];
+    this.zoom = 1;
 
     const hand = document.createElement('div');
     hand.classList.add('hand');

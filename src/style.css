@@ -99,6 +99,7 @@ body {
 }
 
 .brand-copy {
+    min-width: 0;
     margin-right: auto;
 }
 
@@ -122,6 +123,44 @@ body {
     align-items: center;
     margin-left: auto;
     z-index: 18;
+}
+
+.game-over-prompt {
+    position: absolute;
+    top: calc(100% + 10px);
+    right: -2px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    pointer-events: none;
+    z-index: 36;
+}
+
+.game-over-prompt[hidden] {
+    display: none;
+}
+
+.game-over-prompt__arrow {
+    color: #5c759e;
+    font-size: 1rem;
+    font-weight: 800;
+    line-height: 1;
+    animation: game-over-arrow-bob 900ms ease-in-out infinite;
+}
+
+.game-over-prompt__text {
+    padding: 7px 10px;
+    border: 1px solid rgba(104, 136, 187, 0.2);
+    border-radius: var(--panel-radius);
+    background: rgba(250, 253, 255, 0.96);
+    color: var(--text-primary);
+    font-size: 0.76rem;
+    font-weight: 700;
+    line-height: 1;
+    white-space: nowrap;
+    box-shadow: 0 10px 22px rgba(88, 105, 132, 0.14);
+    animation: game-over-prompt-pulse 1800ms ease-in-out infinite;
 }
 
 .header-options-button {
@@ -488,10 +527,10 @@ body {
 }
 
 .room-bar__meta {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    align-items: baseline;
-    gap: 4px 10px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
     min-width: 0;
 }
 
@@ -508,10 +547,11 @@ body {
 }
 
 .room-bar__players {
-    grid-column: 1 / -1;
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
+    align-items: center;
+    min-width: 0;
 }
 
 .room-player {
@@ -612,6 +652,16 @@ body {
     opacity: 0.58;
 }
 
+.app--game-ended .board-area {
+    opacity: 0.78;
+    pointer-events: none;
+}
+
+.app--game-ended .board-scroller,
+.app--game-ended .bottom-bar {
+    filter: grayscale(0.08);
+}
+
 .side-column {
     display: flex;
     flex-direction: column;
@@ -631,17 +681,31 @@ body {
 
 .board-scroller {
     width: 100%;
-    overflow-x: auto;
-    overflow-y: hidden;
+    overflow: auto;
     padding: 0;
     box-sizing: border-box;
     border-radius: calc(var(--panel-radius) + 4px);
     background: rgba(255, 255, 255, 0.16);
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-x pan-y;
+}
+
+.board-zoom-surface {
+    position: relative;
+    width: var(--app-width);
+    height: var(--app-width);
 }
 
 .board-column {
     width: 648px;
     min-width: 0;
+    transform-origin: top left;
+    will-change: transform;
+}
+
+.board-scroller--zoomed {
+    box-shadow: inset 0 0 0 1px rgba(104, 136, 187, 0.14);
 }
 
 .preview-layer {
@@ -1039,6 +1103,30 @@ body {
     padding: 0 14px;
 }
 
+@keyframes game-over-arrow-bob {
+    0%,
+    100% {
+        transform: translateY(0);
+        opacity: 0.86;
+    }
+
+    50% {
+        transform: translateY(-4px);
+        opacity: 1;
+    }
+}
+
+@keyframes game-over-prompt-pulse {
+    0%,
+    100% {
+        box-shadow: 0 10px 22px rgba(88, 105, 132, 0.14);
+    }
+
+    50% {
+        box-shadow: 0 14px 28px rgba(88, 105, 132, 0.2);
+    }
+}
+
 .status-score--shake {
     animation: status-shake 220ms ease-out;
 }
@@ -1137,18 +1225,30 @@ body {
     .board-area {
         width: 100%;
     }
+
+    .history-panel {
+        min-height: 320px;
+    }
 }
 
 @media (max-width: 720px) {
     .header {
-        align-items: flex-start;
-        flex-wrap: wrap;
+        align-items: center;
+        flex-wrap: nowrap;
     }
 
     .header-actions {
-        width: 100%;
-        margin-left: 0;
+        width: auto;
+        margin-left: auto;
         justify-content: flex-end;
+    }
+
+    .brand-copy h1 {
+        font-size: 1.5rem;
+    }
+
+    .brand-copy span {
+        font-size: 0.8rem;
     }
 
     .options-menu {
@@ -1165,6 +1265,18 @@ body {
         grid-template-columns: 1fr 1fr;
     }
 
+    .room-bar__meta {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 6px;
+    }
+
+    .room-bar__players {
+        width: 100%;
+        flex-direction: column;
+        align-items: stretch;
+    }
+
     .room-input {
         grid-column: 1 / -1;
     }
@@ -1175,5 +1287,9 @@ body {
 
     #play-button {
         grid-column: 1 / -1;
+    }
+
+    .history-panel {
+        min-height: clamp(340px, 48vh, 460px);
     }
 }

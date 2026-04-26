@@ -1,4 +1,4 @@
-import { GRID, APP_WIDTH, TILE_SIZE } from './constants.ts'
+import { GRID, APP_WIDTH, BOARD_HEIGHT_PX, BOARD_WIDTH_PX, TILE_SIZE } from './constants.ts'
 import type { ClientMessage, ServerMessage } from '../shared/protocol.ts'
 import type {
   GameState,
@@ -11,6 +11,7 @@ import type {
 } from '../shared/states.ts'
 import { Actions } from './actions.ts'
 import { Board } from './board.ts'
+import { createBoardZoomController } from './boardZoom.ts'
 import { gridCoordsToTileHolderCoords } from './coordinates.ts'
 import { Hand } from './hand.ts'
 import { premiumSquareAt, premiumSquareLabel, type BoardLayoutType } from '../shared/boardBonuses.ts'
@@ -42,6 +43,7 @@ let historyList: HTMLDivElement;
 let previewLayer: HTMLDivElement;
 let optionsButton: HTMLButtonElement | null = null;
 let optionsMenu!: HTMLDivElement;
+let gameOverPrompt: HTMLDivElement | null = null;
 let playButton: HTMLButtonElement | null = null;
 let passButton: HTMLButtonElement | null = null;
 let exchangeButton: HTMLButtonElement | null = null;
@@ -178,7 +180,16 @@ if (header) {
   actionsSection.appendChild(resetButton);
 
   optionsMenu.append(layoutSection, actionsSection);
-  headerActions.append(optionsButton, optionsMenu);
+  gameOverPrompt = document.createElement('div');
+  gameOverPrompt.classList.add('game-over-prompt');
+  gameOverPrompt.hidden = true;
+  gameOverPrompt.setAttribute('aria-hidden', 'true');
+  gameOverPrompt.innerHTML = `
+    <span class="game-over-prompt__arrow">↑</span>
+    <span class="game-over-prompt__text">Reset to play again</span>
+  `;
+
+  headerActions.append(optionsButton, optionsMenu, gameOverPrompt);
   header.appendChild(headerActions);
 }
 
@@ -215,10 +226,15 @@ const boardScroller = document.createElement('div');
 boardScroller.classList.add('board-scroller');
 boardArea.appendChild(boardScroller);
 
+const boardZoomSurface = document.createElement('div');
+boardZoomSurface.classList.add('board-zoom-surface');
+boardScroller.appendChild(boardZoomSurface);
+
 const boardColumn = document.createElement('div');
 boardColumn.classList.add('board-column');
 boardColumn.style.width = APP_WIDTH;
-boardScroller.appendChild(boardColumn);
+boardColumn.style.height = `${BOARD_HEIGHT_PX}px`;
+boardZoomSurface.appendChild(boardColumn);
 
 const historyPanel = document.createElement('aside');
 historyPanel.classList.add('history-panel');
@@ -236,6 +252,14 @@ historyPanel.append(historyHeader, historyList);
 sideColumn.appendChild(historyPanel);
 
 let board = new Board(GRID, boardColumn);
+createBoardZoomController({
+  board,
+  scroller: boardScroller,
+  surface: boardZoomSurface,
+  zoomTarget: boardColumn,
+  baseWidth: BOARD_WIDTH_PX,
+  baseHeight: BOARD_HEIGHT_PX,
+});
 
 let bottomBar = document.createElement('div');
 bottomBar.classList.add('bottom-bar')
@@ -501,6 +525,8 @@ function clearJoinedRoomState(roomId: string, message: string): void {
   selectedExchangeIds = new Set();
   clearPlayerId();
   app.classList.remove('app--waiting-turn');
+  app.classList.remove('app--game-ended');
+  syncGameOverPrompt(false);
   writeSessionCookie({
     roomId,
     playerId: undefined,
@@ -540,11 +566,27 @@ function updateStatusFromState(
   const isMyTurn = state.currentPlayerId === player?.id;
   syncScoreFeedback(previousState, state);
   const bagLabel = `${state.remainingTiles} tile${state.remainingTiles === 1 ? '' : 's'} left in bag`;
-  statusScoreMeta.textContent = state.lastMove?.score
-    ? `+${state.lastMove.score} last turn / ${bagLabel}`
-    : bagLabel;
-  app.classList.toggle('app--waiting-turn', !isMyTurn);
+  if (state.gameEnded) {
+    statusScoreMeta.textContent = `Game over / ${bagLabel}`;
+  } else if (state.finalTurnsRemaining !== null) {
+    const turnLabel = `${state.finalTurnsRemaining} final turn${state.finalTurnsRemaining === 1 ? '' : 's'} left`;
+    statusScoreMeta.textContent = state.lastMove?.score
+      ? `+${state.lastMove.score} last turn / ${turnLabel}`
+      : `${turnLabel} / ${bagLabel}`;
+  } else {
+    statusScoreMeta.textContent = state.lastMove?.score
+      ? `+${state.lastMove.score} last turn / ${bagLabel}`
+      : bagLabel;
+  }
+  app.classList.toggle('app--waiting-turn', !state.gameEnded && !isMyTurn);
+  app.classList.toggle('app--game-ended', state.gameEnded);
+  syncGameOverPrompt(state.gameEnded);
   renderTurnHistory(state.turnHistory);
+}
+
+function syncGameOverPrompt(gameEnded: boolean): void {
+  if (!gameOverPrompt) return;
+  gameOverPrompt.hidden = !gameEnded;
 }
 
 function syncScoreFeedback(previousState: GameState | null, state: GameState): void {
@@ -745,14 +787,28 @@ function applyMovePreview(preview: MovePreviewState): void {
     const cellCoords = word.cells.map((cell) => gridCoordsToTileHolderCoords(cell.col, cell.row, board));
     const minX = Math.min(...cellCoords.map((coords) => coords.x));
     const maxX = Math.max(...cellCoords.map((coords) => coords.x));
+    const minY = Math.min(...cellCoords.map((coords) => coords.y));
     const maxY = Math.max(...cellCoords.map((coords) => coords.y));
     const centerX = (minX + maxX + TILE_SIZE) / 2;
     const bottomY = maxY + TILE_SIZE;
-    const badgeKey = `${Math.round(centerX)}:${Math.round(bottomY)}`;
+    const previewHeight = previewLayer.clientHeight || board.el.clientHeight;
+    const badgeHeight = 18;
+    const badgeGap = 5;
+    const badgeStep = 20;
+    const belowTop = bottomY + badgeGap;
+    const needsAbove = belowTop + badgeHeight > previewHeight;
+    const lane = needsAbove ? 'above' : 'below';
+    const anchorY = needsAbove ? minY : bottomY;
+    const badgeKey = `${lane}:${Math.round(centerX)}:${Math.round(anchorY)}`;
     const badgeIndex = badgeSlotCounts.get(badgeKey) ?? 0;
     badgeSlotCounts.set(badgeKey, badgeIndex + 1);
     badge.style.left = `${centerX}px`;
-    badge.style.top = `${bottomY + 8 + badgeIndex * 22}px`;
+    if (needsAbove) {
+      const aboveTop = minY - badgeGap - badgeHeight - badgeIndex * badgeStep;
+      badge.style.top = `${Math.max(0, aboveTop)}px`;
+    } else {
+      badge.style.top = `${belowTop + badgeIndex * badgeStep}px`;
+    }
     return badge;
   });
 
@@ -776,17 +832,10 @@ function clearMovePreviewMarks(): void {
 }
 
 function renderRoomPlayers(state: GameState | null, player: PlayerPublicState | null): void {
-  const partner = state ? partnerPlayer(state, player) : null;
-
-  const slots: Array<{ label: string; player: PlayerPublicState | null }> = player
-    ? [
-      { label: 'You', player },
-      { label: 'Partner', player: partner },
-    ]
-    : [
-      { label: 'Seat 1', player: state?.players[0] ?? null },
-      { label: 'Seat 2', player: state?.players[1] ?? null },
-    ];
+  const slots: Array<{ label: string; player: PlayerPublicState | null }> = [
+    { label: 'Seat 1', player: state?.players[0] ?? null },
+    { label: 'Seat 2', player: state?.players[1] ?? null },
+  ];
 
   const slotEls = slots.map((slot) => {
     const chip = document.createElement('div');
@@ -859,7 +908,6 @@ function renderTurnHistory(entries: TurnHistoryEntryState[]): void {
         row.classList.add('history-entry__word');
         row.tabIndex = 0;
         row.classList.add('history-entry__word--interactive');
-        row.title = historyWordBreakdownText(wordScore);
 
         const wordMeta = document.createElement('div');
         wordMeta.classList.add('history-entry__word-meta');
@@ -932,11 +980,6 @@ function historyWordFormula(wordScore: TurnWordScoreState): string {
   return wordScore.wordMultiplier > 1 ? `${base} x ${wordScore.wordMultiplier}` : base;
 }
 
-function historyWordBreakdownText(wordScore: TurnWordScoreState): string {
-  const note = historyWordBonusNote(wordScore);
-  return note ? `${historyWordFormula(wordScore)}\n${note}` : historyWordFormula(wordScore);
-}
-
 function historyFormulaTerm(letterScore: TurnWordScoreState['letters'][number]): string {
   if (
     letterScore.isNewTile &&
@@ -951,9 +994,14 @@ function historyFormulaTerm(letterScore: TurnWordScoreState['letters'][number]):
 function historyWordBonusNote(wordScore: TurnWordScoreState): string {
   if (wordScore.wordBonuses.length === 0) return '';
   const bonuses = wordScore.wordBonuses.map((bonus) => (
-    `${premiumSquareLabel(bonus.premium)} @ ${formatCellPosition(bonus.col, bonus.row)}`
+    `word bonus on ${letterAtPosition(wordScore, bonus.col, bonus.row)}`
   ));
   return `word bonus: ${bonuses.join(', ')}`;
+}
+
+function letterAtPosition(wordScore: TurnWordScoreState, col: number, row: number): string {
+  const letter = wordScore.letters.find((candidate) => candidate.col === col && candidate.row === row)?.letter;
+  return letter ? `"${letter}"` : formatCellPosition(col, row);
 }
 
 function formatCellPosition(col: number, row: number): string {
@@ -1092,11 +1140,6 @@ function requirePlayerId(): string | null {
 
 function hasPendingBoardTiles(): boolean {
   return board.tiles.some((tile) => !tile.isPlayed);
-}
-
-function partnerPlayer(state: GameState, player: PlayerPublicState | null): PlayerPublicState | null {
-  if (!player) return null;
-  return state.players.find((candidate) => candidate.id !== player.id) ?? null;
 }
 
 function submitPlayTurn(): void {

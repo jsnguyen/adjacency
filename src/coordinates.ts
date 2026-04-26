@@ -2,6 +2,10 @@ import { Hand } from './hand.ts'
 import { Board } from './board.ts'
 import { TILE_SIZE } from './constants.ts'
 
+function holderScale(tileHolder: Hand | Board): number {
+  return tileHolder.zoom ?? 1;
+}
+
 // 3 coordinate systems:
 // the actual screen coordinates (clientX/Y) with origin at top-left of viewport
 // the board coordinates with origin at bottom-left of the board, increasing upward and rightward
@@ -9,9 +13,10 @@ import { TILE_SIZE } from './constants.ts'
 
 export function clientToBoardCoords(clientX : number, clientY : number, tileHolder : Hand | Board) {
   const rect = tileHolder.el.getBoundingClientRect();
+  const scale = holderScale(tileHolder);
   return {
-    x: clientX - rect.left,
-    y: clientY - rect.top,
+    x: (clientX - rect.left) / scale,
+    y: (clientY - rect.top) / scale,
   };
 }
 

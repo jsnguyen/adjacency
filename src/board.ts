@@ -9,12 +9,14 @@ export class Board {
   rows: number;
   tiles: Tile[];
   el: HTMLElement;
+  zoom: number;
 
   constructor(grid : Record<string, number>, parent : HTMLElement) {
     this.grid = grid;
     this.cols = grid.cols;
     this.rows = grid.rows;
     this.tiles = [];
+    this.zoom = 1;
 
     const board = document.createElement('div');
     board.classList.add('board');

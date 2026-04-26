@@ -19,6 +19,8 @@ export type PersistedRoomState = {
   turnOrder: string[];
   currentTurnIndex: number;
   bag: Letter[];
+  gameEnded?: boolean;
+  finalTurnsRemaining?: number | null;
   boardLayout?: BoardLayoutType;
   nextTileNumber: number;
   teamScore: number;
@@ -29,7 +31,7 @@ export type PersistedRoomState = {
 };
 
 type PersistedStore = {
-  version: 3;
+  version: 4;
   rooms: PersistedRoomState[];
 };
 
@@ -45,7 +47,7 @@ export function loadPersistedRooms(): PersistedRoomState[] {
   try {
     const raw = readFileSync(path, 'utf8');
     const parsed = JSON.parse(raw) as PersistedStore;
-    if (!parsed || parsed.version !== 3 || !Array.isArray(parsed.rooms)) {
+    if (!parsed || parsed.version !== 4 || !Array.isArray(parsed.rooms)) {
       console.warn(`Ignoring invalid state file at ${path}.`);
       return [];
     }
@@ -61,7 +63,7 @@ export function savePersistedRooms(rooms: PersistedRoomState[]): void {
   const path = stateFilePath();
   const tmpPath = `${path}.tmp`;
   const store: PersistedStore = {
-    version: 3,
+    version: 4,
     rooms,
   };
 
@@ -79,6 +81,8 @@ function isPersistedRoomState(value: unknown): value is PersistedRoomState {
     Array.isArray(value.turnOrder) &&
     Number.isInteger(value.currentTurnIndex) &&
     Array.isArray(value.bag) &&
+    (value.gameEnded === undefined || typeof value.gameEnded === 'boolean') &&
+    (value.finalTurnsRemaining === undefined || value.finalTurnsRemaining === null || Number.isInteger(value.finalTurnsRemaining)) &&
     (value.boardLayout === undefined || isBoardLayoutType(value.boardLayout)) &&
     Number.isInteger(value.nextTileNumber) &&
     typeof value.teamScore === 'number' &&

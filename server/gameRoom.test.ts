@@ -76,4 +76,39 @@ assert.equal(state.lastMove, null);
 assert.equal(state.boardLayout, 'words-with-friends');
 assert.equal(state.canChangeBoardLayout, true);
 
+const finalRoundSeed = new GameRoom('final-round');
+const finalRoundFirst = finalRoundSeed.addPlayer(null, 'final-session-1');
+const finalRoundSecond = finalRoundSeed.addPlayer(null, 'final-session-2');
+const finalRoundPersisted = finalRoundSeed.toPersistedState();
+finalRoundPersisted.bag = [];
+finalRoundPersisted.lastMove = null;
+finalRoundPersisted.turnHistory = [];
+finalRoundPersisted.nextTurnNumber = 1;
+
+const finalRoundRoom = GameRoom.fromPersistedState(finalRoundPersisted);
+
+state = finalRoundRoom.snapshot();
+assert.equal(state.gameEnded, false);
+assert.equal(state.finalTurnsRemaining, null);
+assert.equal(state.currentPlayerId, finalRoundFirst.id);
+
+assert.equal(finalRoundRoom.passTurn(finalRoundFirst.id), null);
+state = finalRoundRoom.snapshot();
+assert.equal(state.gameEnded, false);
+assert.equal(state.finalTurnsRemaining, 2);
+assert.equal(state.currentPlayerId, finalRoundSecond.id);
+
+assert.equal(finalRoundRoom.passTurn(finalRoundSecond.id), null);
+state = finalRoundRoom.snapshot();
+assert.equal(state.gameEnded, false);
+assert.equal(state.finalTurnsRemaining, 1);
+assert.equal(state.currentPlayerId, finalRoundFirst.id);
+
+assert.equal(finalRoundRoom.passTurn(finalRoundFirst.id), null);
+state = finalRoundRoom.snapshot();
+assert.equal(state.gameEnded, true);
+assert.equal(state.finalTurnsRemaining, 0);
+assert.equal(state.currentPlayerId, null);
+assert.equal(finalRoundRoom.passTurn(finalRoundSecond.id), 'Game is over.');
+
 console.log('Game room tests passed.');
