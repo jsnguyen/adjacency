@@ -35,6 +35,21 @@ export function makeDraggable(tile: Tile, hand: Hand, board: Board) {
   let pendingCleanup : (() => void) | null = null;
   const ac = new AbortController();
 
+  const restoreToOrigin = () => {
+    if (!drag) return;
+    tile.col = drag.originCol;
+    tile.row = drag.originRow;
+    drag.origin.addTile(tile);
+    const coords = gridCoordsToTileHolderCoords(tile.col, tile.row, drag.origin);
+    drag.origin.el.appendChild(el);
+    el.style.position = '';
+    el.style.left = coords.x + 'px';
+    el.style.top = coords.y + 'px';
+    el.classList.remove('dragging');
+    el.style.cursor = 'grab';
+    drag = null;
+  };
+
   el.addEventListener('pointerdown', (e) => {
     pendingCleanup?.();
     pendingCleanup = null;
@@ -54,6 +69,7 @@ export function makeDraggable(tile: Tile, hand: Hand, board: Board) {
     el.style.position = 'fixed';
     el.style.left = rect.left + 'px';
     el.style.top  = rect.top  + 'px';
+    el.classList.add('dragging');
 
     tile.tileHolder.removeTile(tile);
 
@@ -133,11 +149,12 @@ export function makeDraggable(tile: Tile, hand: Hand, board: Board) {
     */
 
     drag = null;
+    el.classList.remove('dragging');
     el.style.cursor = 'grab';
 
   }, ac);
 
-  el.addEventListener('pointercancel', () => { drag = null; }, ac);
+  el.addEventListener('pointercancel', restoreToOrigin, ac);
 
   return () => ac.abort();
 

@@ -6,8 +6,10 @@
   "scripts": {
     "dev": "vite",
     "server": "tsx server/index.ts",
+    "start": "tsx server/index.ts",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "tsx server/rules.test.ts"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
@@ -16,9 +18,7 @@
     "vite": "^8.0.10"
   },
   "dependencies": {
-    "node": "^24.15.0",
     "tsx": "^4.21.0",
-    "ws": "^8.20.0",
-    "wss": "^0.0.2"
+    "ws": "^8.20.0"
   }
 }

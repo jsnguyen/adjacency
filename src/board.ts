@@ -31,6 +31,8 @@ export class Board {
 
   addTile(tile : Tile) {
     if (!this.spaceIsEmpty(tile)) return false;
+    tile.el.classList.remove('selected-tile');
+    tile.tileHolder = this;
     this.tiles.push(tile);
     this.el.appendChild(tile.el);
     return true;
@@ -40,22 +42,32 @@ export class Board {
     this.tiles = this.tiles.filter(t => t !== tile);
   }
 
+  clearTiles() {
+    for (const tile of this.tiles) {
+      tile.disableDrag?.();
+      tile.el.remove();
+    }
+    this.tiles = [];
+  }
+
   recallHand(hand : Hand) {
-    this.tiles.forEach(t => {
+    for (const t of [...this.tiles]) {
       if (!t.isPlayed) {
-        t.tileHolder.removeTile(t);
         if (t.handCol === null || t.handRow === null) {
           console.log("Recall failed due to null hand col/row")
-          return;
+          continue;
         }
         const c = gridCoordsToTileHolderCoords(t.handCol, t.handRow, hand);
-        hand.addTile(t);
         t.col = t.handCol
         t.row = t.handRow
-        t.el.style.left = c.x + 'px';
-        t.el.style.top  = c.y + 'px';
+        if (hand.spaceIsEmpty(t)) {
+          t.tileHolder.removeTile(t);
+          hand.addTile(t);
+          t.el.style.left = c.x + 'px';
+          t.el.style.top  = c.y + 'px';
+        }
       }
-    });
+    }
   }
 
   setAllPlayed() {

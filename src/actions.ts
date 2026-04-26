@@ -1,6 +1,6 @@
 import { GRID } from './constants.ts'
 
-type ActionSide = 'left' | 'right';
+type ActionSide = 'full';
 
 export class Actions {
   nButtons: number;

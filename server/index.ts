@@ -1,35 +1,650 @@
+import { randomUUID } from 'node:crypto';
+import { createReadStream, existsSync, statSync } from 'node:fs';
+import { createServer } from 'node:http';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import { extname, join, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
+import { TILE_DISTRIBUTION } from '../shared/letters.ts';
+import type { Letter } from '../shared/letters.ts';
 import type { ClientMessage, ServerMessage } from '../shared/protocol.ts';
-import type { TileHolderState } from '../shared/states.ts'
+import type { GameState, LastMoveState, PlayerPublicState, TileHolderState } from '../shared/states.ts';
+import { loadDictionary } from './dictionary.ts';
+import {
+  BOARD_COLS,
+  BOARD_ROWS,
+  CENTER_COL,
+  CENTER_ROW,
+  RACK_SIZE,
+  coordKey,
+  validateMove,
+} from './rules.ts';
+import type { LetterTileState } from './rules.ts';
 
-const PORT = 8080;
-const wss = new WebSocketServer({ port: PORT });
+const PORT = Number(process.env.PORT ?? 8080);
+const HOST = process.env.HOST ?? '0.0.0.0';
+const DEFAULT_ROOM_ID = 'main';
+const DIST_DIR = resolve(fileURLToPath(new URL('../dist', import.meta.url)));
+const dictionary = loadDictionary();
+const server = createServer(handleHttpRequest);
+const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
+const rooms = new Map<string, GameRoom>();
+const socketAssignments = new Map<WebSocket, { room: GameRoom; playerId: string }>();
+const heartbeatIntervalMs = 30_000;
 
-function send(socket: WebSocket, msg: ServerMessage): void {
-  socket.send(JSON.stringify(msg));
-}
+type Player = {
+  id: string;
+  socket: LiveSocket;
+  rack: LetterTileState[];
+  connected: boolean;
+};
 
-function verifyBoard(socket: WebSocket, handState: TileHolderState, boardState: TileHolderState) {
-  socket.send(JSON.stringify({type: 'board_is_valid', boardIsValid: true}))
-}
+type LiveSocket = WebSocket & {
+  isAlive: boolean;
+};
 
-wss.on('connection', (socket : WebSocket) => {
-  const playerId = crypto.randomUUID();
-  send(socket, { type: 'player_id', playerId });
+class GameRoom {
+  readonly id: string;
+  private board = new Map<string, LetterTileState>();
+  private players = new Map<string, Player>();
+  private turnOrder: string[] = [];
+  private currentTurnIndex = 0;
+  private bag: Letter[];
+  private nextTileNumber = 1;
+  private teamScore = 0;
+  private lastMove: LastMoveState = null;
 
-  socket.on('message', (raw : ServerMessage) => {
-    const msg = JSON.parse(String(raw)) as ClientMessage;
+  constructor(id: string) {
+    this.id = id;
+    this.bag = shuffle(createBag());
+  }
 
-    switch (msg.type) {
-      case 'play_turn':
-        console.log(msg.handState);
-        console.log(msg.boardState);
-        console.log(msg.playerId);
-        verifyBoard(socket, msg.handState, msg.boardState);
-        break;
+  addPlayer(socket: LiveSocket): Player {
+    const player: Player = {
+      id: randomUUID(),
+      socket,
+      rack: [],
+      connected: true,
+    };
+    this.drawRack(player);
+    this.players.set(player.id, player);
+    this.turnOrder.push(player.id);
+    return player;
+  }
+
+  removePlayer(playerId: string): void {
+    const player = this.players.get(playerId);
+    if (!player) return;
+
+    this.returnRackToBag(player);
+    this.players.delete(playerId);
+
+    const removedIndex = this.turnOrder.indexOf(playerId);
+    if (removedIndex >= 0) {
+      this.turnOrder.splice(removedIndex, 1);
+      if (this.turnOrder.length === 0) {
+        this.currentTurnIndex = 0;
+      } else if (removedIndex < this.currentTurnIndex) {
+        this.currentTurnIndex -= 1;
+      } else if (removedIndex === this.currentTurnIndex) {
+        this.currentTurnIndex %= this.turnOrder.length;
+      }
     }
 
+    this.broadcastState();
+  }
+
+  isEmpty(): boolean {
+    return this.players.size === 0;
+  }
+
+  playTurn(playerId: string, boardState: TileHolderState, handState: TileHolderState): string | null {
+    const player = this.players.get(playerId);
+    if (!player) return 'Unknown player.';
+    if (this.currentPlayerId() !== playerId) return 'It is not your turn.';
+
+    const result = validateMove(this.board, player.rack, boardState, dictionary.words);
+    if (!result.ok) return result.reason;
+    const playedIds = new Set(result.newTiles.map((tile) => tile.id));
+    const rackStateReason = validateSubmittedRack(player.rack, handState, playedIds);
+    if (rackStateReason) return rackStateReason;
+
+    for (const tile of result.newTiles) {
+      this.board.set(coordKey(tile.col, tile.row), tile);
+    }
+
+    player.rack = player.rack.filter((tile) => !playedIds.has(tile.id));
+    this.drawRack(player);
+    this.teamScore += result.score;
+    this.lastMove = {
+      playerId,
+      words: result.words,
+      score: result.score,
+      message: `Played ${result.words.join(', ')} for ${result.score} points.`,
+    };
+    this.advanceTurn();
+    return null;
+  }
+
+  passTurn(playerId: string): string | null {
+    if (!this.players.has(playerId)) return 'Unknown player.';
+    if (this.currentPlayerId() !== playerId) return 'It is not your turn.';
+
+    this.lastMove = {
+      playerId,
+      words: [],
+      score: 0,
+      message: 'Passed.',
+    };
+    this.advanceTurn();
+    return null;
+  }
+
+  exchangeTiles(playerId: string, tileIds: string[]): string | null {
+    const player = this.players.get(playerId);
+    if (!player) return 'Unknown player.';
+    if (this.currentPlayerId() !== playerId) return 'It is not your turn.';
+
+    const uniqueTileIds = [...new Set(tileIds)];
+    if (uniqueTileIds.length === 0) return 'Choose at least one tile to exchange.';
+    if (this.bag.length < uniqueTileIds.length) return 'There are not enough tiles left in the bag to exchange.';
+
+    const exchangeIds = new Set(uniqueTileIds);
+    const exchanging = player.rack.filter((tile) => exchangeIds.has(tile.id));
+    if (exchanging.length !== uniqueTileIds.length) {
+      return 'You can only exchange tiles from your rack.';
+    }
+
+    player.rack = player.rack.filter((tile) => !exchangeIds.has(tile.id));
+    player.rack.push(...this.drawTiles(uniqueTileIds.length));
+    this.bag.push(...exchanging.map((tile) => tile.letter));
+    shuffleInPlace(this.bag);
+    this.reindexRack(player);
+
+    this.lastMove = {
+      playerId,
+      words: [],
+      score: 0,
+      message: `Exchanged ${uniqueTileIds.length} tile${uniqueTileIds.length === 1 ? '' : 's'}.`,
+    };
+    this.advanceTurn();
+    return null;
+  }
+
+  sendState(socket: WebSocket): void {
+    send(socket, { type: 'game_state', state: this.state() });
+  }
+
+  broadcastState(): void {
+    const state = this.state();
+    for (const player of this.players.values()) {
+      send(player.socket, { type: 'game_state', state });
+    }
+  }
+
+  private currentPlayerId(): string | null {
+    if (this.turnOrder.length === 0) return null;
+    return this.turnOrder[this.currentTurnIndex] ?? this.turnOrder[0] ?? null;
+  }
+
+  private advanceTurn(): void {
+    if (this.turnOrder.length === 0) {
+      this.currentTurnIndex = 0;
+      return;
+    }
+    this.currentTurnIndex = (this.currentTurnIndex + 1) % this.turnOrder.length;
+  }
+
+  private state(): GameState {
+    return {
+      roomId: this.id,
+      board: {
+        name: 'board',
+        tiles: [...this.board.values()].sort(sortTiles),
+      },
+      players: [...this.players.values()].map((player): PlayerPublicState => ({
+        id: player.id,
+        connected: player.connected,
+        rack: {
+          name: 'hand',
+          tiles: [...player.rack].sort(sortTiles),
+        },
+      })),
+      currentPlayerId: this.currentPlayerId(),
+      teamScore: this.teamScore,
+      remainingTiles: this.bag.length,
+      lastMove: this.lastMove,
+      rules: {
+        boardCols: BOARD_COLS,
+        boardRows: BOARD_ROWS,
+        rackSize: RACK_SIZE,
+        centerCol: CENTER_COL,
+        centerRow: CENTER_ROW,
+        dictionary: dictionary.mode,
+        dictionaryWordCount: dictionary.words.size,
+      },
+    };
+  }
+
+  private drawRack(player: Player): void {
+    while (player.rack.length < RACK_SIZE && this.bag.length > 0) {
+      player.rack.push(...this.drawTiles(1));
+    }
+    this.reindexRack(player);
+  }
+
+  private drawTiles(count: number): LetterTileState[] {
+    const tiles: LetterTileState[] = [];
+    for (let index = 0; index < count; index += 1) {
+      const letter = this.bag.pop();
+      if (!letter) break;
+      tiles.push({
+        id: `tile-${this.nextTileNumber}`,
+        letter,
+        col: 0,
+        row: 0,
+      });
+      this.nextTileNumber += 1;
+    }
+    return tiles;
+  }
+
+  private reindexRack(player: Player): void {
+    player.rack = player.rack.map((tile, index) => ({
+      ...tile,
+      col: index,
+      row: 0,
+    }));
+  }
+
+  private returnRackToBag(player: Player): void {
+    this.bag.push(...player.rack.map((tile) => tile.letter));
+    shuffleInPlace(this.bag);
+    player.rack = [];
+  }
+}
+
+function getRoom(roomId: string): GameRoom {
+  const existingRoom = rooms.get(roomId);
+  if (existingRoom) return existingRoom;
+
+  const room = new GameRoom(roomId);
+  rooms.set(roomId, room);
+  return room;
+}
+
+function joinRoom(socket: LiveSocket, roomId: string): void {
+  const normalisedRoomId = normaliseRoomId(roomId);
+  if (!normalisedRoomId) {
+    send(socket, { type: 'error', msg: 'Room names can use letters, numbers, underscores, and dashes only.' });
+    return;
+  }
+
+  leaveAssignedRoom(socket);
+  const room = getRoom(normalisedRoomId);
+  const player = room.addPlayer(socket);
+  socketAssignments.set(socket, { room, playerId: player.id });
+  send(socket, { type: 'player_id', playerId: player.id });
+  room.broadcastState();
+}
+
+function leaveAssignedRoom(socket: WebSocket): void {
+  const assignment = socketAssignments.get(socket);
+  if (!assignment) return;
+
+  socketAssignments.delete(socket);
+  assignment.room.removePlayer(assignment.playerId);
+  if (assignment.room.isEmpty()) {
+    rooms.delete(assignment.room.id);
+  }
+}
+
+function send(socket: WebSocket, msg: ServerMessage): void {
+  if (socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify(msg));
+  }
+}
+
+function rejectTurn(socket: WebSocket, room: GameRoom, reason: string): void {
+  send(socket, { type: 'turn_rejected', reason });
+  room.sendState(socket);
+}
+
+function handleMessage(socket: LiveSocket, msg: ClientMessage): void {
+  if (msg.type === 'join_room') {
+    joinRoom(socket, msg.roomId);
+    return;
+  }
+
+  const assignment = socketAssignments.get(socket);
+  if (!assignment) {
+    send(socket, { type: 'error', msg: 'Join a room before sending game actions.' });
+    return;
+  }
+
+  const { room } = assignment;
+  switch (msg.type) {
+    case 'play_turn': {
+      const reason = room.playTurn(msg.playerId, msg.boardState, msg.handState);
+      if (reason) {
+        rejectTurn(socket, room, reason);
+      } else {
+        send(socket, { type: 'board_is_valid', boardIsValid: true });
+        room.broadcastState();
+      }
+      break;
+    }
+    case 'pass_turn': {
+      const reason = room.passTurn(msg.playerId);
+      if (reason) {
+        rejectTurn(socket, room, reason);
+      } else {
+        room.broadcastState();
+      }
+      break;
+    }
+    case 'exchange_tiles': {
+      const reason = room.exchangeTiles(msg.playerId, msg.tileIds);
+      if (reason) {
+        rejectTurn(socket, room, reason);
+      } else {
+        room.broadcastState();
+      }
+      break;
+    }
+  }
+}
+
+function createBag(): Letter[] {
+  const letters: Letter[] = [];
+  for (const [letter, count] of Object.entries(TILE_DISTRIBUTION) as [Letter, number][]) {
+    for (let index = 0; index < count; index += 1) {
+      letters.push(letter);
+    }
+  }
+  return letters;
+}
+
+function shuffle<T>(items: T[]): T[] {
+  return shuffleInPlace([...items]);
+}
+
+function shuffleInPlace<T>(items: T[]): T[] {
+  for (let index = items.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [items[index], items[swapIndex]] = [items[swapIndex], items[index]];
+  }
+  return items;
+}
+
+function sortTiles(a: LetterTileState, b: LetterTileState): number {
+  return a.row - b.row || a.col - b.col || a.id.localeCompare(b.id);
+}
+
+function validateSubmittedRack(
+  playerRack: LetterTileState[],
+  handState: TileHolderState,
+  playedIds: Set<string>,
+): string | null {
+  const rackIds = new Set(playerRack.map((tile) => tile.id));
+  const handIds = new Set<string>();
+
+  for (const tile of handState.tiles) {
+    if (playedIds.has(tile.id)) {
+      return 'Played tiles cannot also remain in your rack.';
+    }
+    if (!rackIds.has(tile.id)) {
+      return 'The submitted hand contains a tile that is not in your rack.';
+    }
+    if (handIds.has(tile.id)) {
+      return 'The submitted hand contains a duplicate tile id.';
+    }
+    handIds.add(tile.id);
+  }
+
+  for (const rackId of rackIds) {
+    if (!playedIds.has(rackId) && !handIds.has(rackId)) {
+      return 'The submitted hand is missing an unplayed rack tile.';
+    }
+  }
+
+  return null;
+}
+
+wss.on('connection', (socket: WebSocket) => {
+  const liveSocket = socket as LiveSocket;
+  liveSocket.isAlive = true;
+  liveSocket.on('pong', () => {
+    liveSocket.isAlive = true;
+  });
+
+  joinRoom(liveSocket, DEFAULT_ROOM_ID);
+
+  liveSocket.on('message', (raw) => {
+    let msg: unknown;
+    try {
+      msg = JSON.parse(String(raw));
+    } catch {
+      send(liveSocket, { type: 'error', msg: 'Could not parse client message.' });
+      return;
+    }
+
+    if (!isClientMessage(msg)) {
+      send(liveSocket, { type: 'error', msg: 'Client message is missing required fields.' });
+      return;
+    }
+
+    handleMessage(liveSocket, msg);
+  });
+
+  liveSocket.on('close', () => {
+    leaveAssignedRoom(liveSocket);
   });
 });
 
-console.log(`Server listening on ws://localhost:${PORT}`);
+server.on('upgrade', (request, socket, head) => {
+  const { pathname } = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
+  if (pathname !== '/ws') {
+    socket.destroy();
+    return;
+  }
+
+  wss.handleUpgrade(request, socket, head, (webSocket) => {
+    wss.emit('connection', webSocket, request);
+  });
+});
+
+server.on('clientError', (_error, socket) => {
+  socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
+});
+
+const heartbeat = setInterval(() => {
+  for (const socket of wss.clients) {
+    const liveSocket = socket as LiveSocket;
+    if (!liveSocket.isAlive) {
+      liveSocket.terminate();
+      continue;
+    }
+    liveSocket.isAlive = false;
+    liveSocket.ping();
+  }
+}, heartbeatIntervalMs);
+heartbeat.unref();
+
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+server.listen(PORT, HOST, () => {
+  console.log(`Loaded ${dictionary.words.size} dictionary words from ${dictionary.source}.`);
+  console.log(`Server listening on http://${HOST}:${PORT}`);
+});
+
+function handleHttpRequest(request: IncomingMessage, response: ServerResponse): void {
+  if (request.url === '/health') {
+    sendJson(response, 200, {
+      ok: true,
+      rooms: rooms.size,
+      dictionaryWords: dictionary.words.size,
+    });
+    return;
+  }
+
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    response.writeHead(405, { Allow: 'GET, HEAD' });
+    response.end();
+    return;
+  }
+
+  const requestUrl = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
+  if (requestUrl.pathname === '/ws') {
+    response.writeHead(426, { 'Content-Type': 'text/plain; charset=utf-8' });
+    response.end('Use a WebSocket connection for /ws.');
+    return;
+  }
+
+  const target = staticFilePath(requestUrl.pathname);
+  if (!target) {
+    response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    response.end('Not found.');
+    return;
+  }
+
+  const stat = statSync(target);
+  response.writeHead(200, {
+    'Content-Type': contentType(target),
+    'Content-Length': stat.size,
+    'Cache-Control': target.includes(`${sep}assets${sep}`)
+      ? 'public, max-age=31536000, immutable'
+      : 'no-cache',
+  });
+
+  if (request.method === 'HEAD') {
+    response.end();
+    return;
+  }
+
+  createReadStream(target).pipe(response);
+}
+
+function staticFilePath(pathname: string): string | null {
+  let decodedPathname: string;
+  try {
+    decodedPathname = decodeURIComponent(pathname);
+  } catch {
+    return null;
+  }
+
+  const requestPath = decodedPathname === '/' ? '/index.html' : decodedPathname;
+  const directPath = resolve(DIST_DIR, `.${requestPath}`);
+  if (!isPathInside(directPath, DIST_DIR)) return null;
+
+  if (existsSync(directPath) && statSync(directPath).isFile()) {
+    return directPath;
+  }
+
+  if (requestPath.startsWith('/assets/')) {
+    return null;
+  }
+
+  const indexPath = join(DIST_DIR, 'index.html');
+  return existsSync(indexPath) ? indexPath : null;
+}
+
+function isPathInside(candidate: string, root: string): boolean {
+  return candidate === root || candidate.startsWith(`${root}${sep}`);
+}
+
+function contentType(path: string): string {
+  switch (extname(path)) {
+    case '.html':
+      return 'text/html; charset=utf-8';
+    case '.js':
+      return 'text/javascript; charset=utf-8';
+    case '.css':
+      return 'text/css; charset=utf-8';
+    case '.svg':
+      return 'image/svg+xml';
+    case '.json':
+      return 'application/json; charset=utf-8';
+    case '.ico':
+      return 'image/x-icon';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
+function sendJson(response: ServerResponse, status: number, body: unknown): void {
+  response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
+  response.end(JSON.stringify(body));
+}
+
+function normaliseRoomId(roomId: string): string | null {
+  const trimmedRoomId = roomId.trim();
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(trimmedRoomId)) return null;
+  return trimmedRoomId;
+}
+
+function isClientMessage(value: unknown): value is ClientMessage {
+  if (!isRecord(value) || typeof value.type !== 'string') return false;
+
+  switch (value.type) {
+    case 'join_room':
+      return typeof value.roomId === 'string';
+    case 'play_turn':
+      return (
+        typeof value.playerId === 'string' &&
+        isTileHolderState(value.handState) &&
+        isTileHolderState(value.boardState)
+      );
+    case 'pass_turn':
+      return typeof value.playerId === 'string';
+    case 'exchange_tiles':
+      return (
+        typeof value.playerId === 'string' &&
+        Array.isArray(value.tileIds) &&
+        value.tileIds.length <= RACK_SIZE &&
+        value.tileIds.every((tileId) => typeof tileId === 'string')
+      );
+    default:
+      return false;
+  }
+}
+
+function isTileHolderState(value: unknown): value is TileHolderState {
+  return (
+    isRecord(value) &&
+    typeof value.name === 'string' &&
+    Array.isArray(value.tiles) &&
+    value.tiles.length <= BOARD_COLS * BOARD_ROWS &&
+    value.tiles.every(isTileState)
+  );
+}
+
+function isTileState(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.id === 'string' &&
+    (typeof value.letter === 'string' || value.letter === null) &&
+    Number.isInteger(value.col) &&
+    Number.isInteger(value.row)
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function shutdown(signal: string): void {
+  console.log(`Received ${signal}; shutting down.`);
+  clearInterval(heartbeat);
+  for (const client of wss.clients) {
+    client.close(1001, 'Server shutting down.');
+  }
+  wss.close();
+  server.close(() => {
+    process.exit(0);
+  });
+  setTimeout(() => {
+    process.exit(1);
+  }, 5000).unref();
+}

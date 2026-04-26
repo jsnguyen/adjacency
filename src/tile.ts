@@ -1,8 +1,14 @@
 import { LETTER_VALUES, TILE_SIZE } from './constants.ts'
-import type { Letter } from './constants.ts'
+import type { Letter } from '../shared/letters.ts'
 import type { Hand } from './hand.ts'
 import type { Board } from './board.ts'
 import { gridCoordsToTileHolderCoords } from './coordinates.ts'
+
+type TileOptions = {
+  id?: string;
+  letter?: Letter | null;
+  played?: boolean;
+};
 
 export class Tile {
 
@@ -20,8 +26,8 @@ export class Tile {
   letter: Letter | null;
   value: number | null;
 
-  constructor(col : number, row : number, tileHolder : Hand | Board, isBGTile : boolean = false) {
-    this.id = crypto.randomUUID();
+  constructor(col : number, row : number, tileHolder : Hand | Board, isBGTile : boolean = false, options: TileOptions = {}) {
+    this.id = options.id ?? crypto.randomUUID();
     this.col = col;
     this.row = row;
     this.tileHolder = tileHolder;
@@ -29,7 +35,7 @@ export class Tile {
     this.disableDrag = null;
     this.dragAbortCallback = null;
 
-    this.isPlayed = false;
+    this.isPlayed = options.played ?? false;
     this.handCol = null;
     this.handRow = null;
 
@@ -45,6 +51,9 @@ export class Tile {
       tileDiv.classList.add('tile');
       tileDiv.classList.add('play-tile');
       tileDiv.classList.add('draggable');
+      if (this.isPlayed) {
+        tileDiv.classList.add('played-tile');
+      }
     }
     tileDiv.style.width = TILE_SIZE + 'px';
     tileDiv.style.height = TILE_SIZE + 'px';
@@ -54,6 +63,10 @@ export class Tile {
     tileDiv.style.top = boardCoords.y + 'px';
 
     this.el = tileDiv;
+
+    if (options.letter) {
+      this.setLetter(options.letter);
+    }
 
     if (!isBGTile) {
       this.disableDrag = () => {
@@ -67,6 +80,7 @@ export class Tile {
 
   setLetter(letter : Letter) {
     this.letter = letter;
+    this.el.textContent = '';
     this.el.textContent = this.letter;
 
     const valueDiv = document.createElement('div');

@@ -2,7 +2,7 @@ import { GRID, TILE_SIZE } from './constants.ts'
 import type { TileHolderState } from '../shared/states.ts'
 import { gridCoordsToTileHolderCoords } from './coordinates.ts'
 import { Tile } from './tile.ts'
-import type { Letter } from './constants.ts';
+import type { Letter } from '../shared/letters.ts';
 
 function randomLetter() {
   const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
@@ -16,7 +16,7 @@ export class Hand {
   tiles: Tile[];
   el: HTMLElement;
 
-  constructor(parent : HTMLElement, size = 7) {
+  constructor(parent : HTMLElement, size = 7, dealRandomTiles = false) {
     this.grid = { cols: size, rows: 1, pad: GRID.pad };
     this.cols = size;
     this.rows = 1;
@@ -29,7 +29,9 @@ export class Hand {
     this.el = hand;
     parent.appendChild(this.el);
 
-    this.randomHand(size);
+    if (dealRandomTiles) {
+      this.randomHand(size);
+    }
 
   }
 
@@ -51,6 +53,10 @@ export class Hand {
 
   addTile(tile : Tile) {
     if (this.spaceIsEmpty(tile)) {
+      tile.tileHolder = this;
+      tile.handCol = tile.col;
+      tile.handRow = tile.row;
+      tile.el.classList.add('rack-tile');
       this.tiles.push(tile);
       this.el.appendChild(tile.el);
       return true;
@@ -61,6 +67,14 @@ export class Hand {
 
   removeTile(tile : Tile) {
     this.tiles = this.tiles.filter(t => t !== tile);
+  }
+
+  clearTiles() {
+    for (const tile of this.tiles) {
+      tile.disableDrag?.();
+      tile.el.remove();
+    }
+    this.tiles = [];
   }
 
   shuffleHand() {

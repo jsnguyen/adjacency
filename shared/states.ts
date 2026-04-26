@@ -1,15 +1,10 @@
+import type { Letter } from './letters.ts';
+
 export type Grid = {
   cols: number;
   rows: number;
   pad: number;
 };
-
-export type Letter =
-  | 'A' | 'B' | 'C' | 'D' | 'E'
-  | 'F' | 'G' | 'H' | 'I' | 'J'
-  | 'K' | 'L' | 'M' | 'N' | 'O'
-  | 'P' | 'Q' | 'R' | 'S' | 'T'
-  | 'U' | 'V' | 'W' | 'X' | 'Y' | 'Z';
 
 export type TileState = {
   id: string;
@@ -21,4 +16,36 @@ export type TileState = {
 export type TileHolderState = {
   tiles: TileState[];
   name: string;
+};
+
+export type PlayerPublicState = {
+  id: string;
+  rack: TileHolderState;
+  connected: boolean;
+};
+
+export type LastMoveState = {
+  playerId: string;
+  words: string[];
+  score: number;
+  message: string;
+} | null;
+
+export type GameState = {
+  roomId: string;
+  board: TileHolderState;
+  players: PlayerPublicState[];
+  currentPlayerId: string | null;
+  teamScore: number;
+  remainingTiles: number;
+  lastMove: LastMoveState;
+  rules: {
+    boardCols: number;
+    boardRows: number;
+    rackSize: number;
+    centerCol: number;
+    centerRow: number;
+    dictionary: 'inline' | 'file' | 'system' | 'permissive';
+    dictionaryWordCount: number;
+  };
 };
