@@ -1,7 +1,9 @@
 type SessionCookieState = {
+  accountId?: string;
+  accountName?: string;
+  currentGameId?: string;
   playerId?: string;
-  roomId?: string;
-  sessionId?: string;
+  sessionToken?: string;
 };
 
 const COOKIE_NAME = 'adjacency_state';
@@ -33,6 +35,15 @@ export function writeSessionCookie(partialState: SessionCookieState): void {
     `${COOKIE_NAME}=${encodeURIComponent(JSON.stringify(nextState))}`,
     'Path=/',
     `Max-Age=${COOKIE_MAX_AGE_S}`,
+    'SameSite=Lax',
+  ].join('; ');
+}
+
+export function clearSessionCookie(): void {
+  document.cookie = [
+    `${COOKIE_NAME}=`,
+    'Path=/',
+    'Max-Age=0',
     'SameSite=Lax',
   ].join('; ');
 }

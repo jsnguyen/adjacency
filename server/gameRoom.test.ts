@@ -13,16 +13,17 @@ for (const [letter, expectedCount] of Object.entries(TILE_DISTRIBUTION)) {
 }
 
 const room = new GameRoom('bag-test');
-const firstPlayer = room.addPlayer(null, 'session-1');
-const secondPlayer = room.addPlayer(null, 'session-2');
-
-assert.equal(room.hasOpenSeat(), false);
+const firstPlayer = room.addPlayer({ id: 'account-a', name: 'Alice' }, 0, null);
+const secondPlayer = room.addPlayer({ id: 'account-b', name: 'Blair' }, 1, null);
 
 let state = room.snapshot();
 assert.equal(state.players.length, 2);
+assert.equal(state.players[0]?.accountName, 'Alice');
+assert.equal(state.players[1]?.accountName, 'Blair');
 assert.equal(state.remainingTiles, totalTiles - 14);
 assert.equal(state.boardLayout, 'scrabble');
 assert.equal(state.canChangeBoardLayout, true);
+assert.equal(state.gameId, 'bag-test');
 
 const nytLayoutReason = room.setBoardLayout(firstPlayer.id, 'nyt-crossplay');
 assert.equal(nytLayoutReason, null);
@@ -49,6 +50,7 @@ state = room.snapshot();
 assert.equal(state.remainingTiles, totalTiles - 14);
 assert.equal(state.currentPlayerId, secondPlayer.id);
 assert.equal(state.turnHistory[0]?.kind, 'exchange');
+assert.equal(state.turnHistory[0]?.playerName, 'Alice');
 assert.equal(state.canChangeBoardLayout, false);
 
 const lateLayoutReason = room.setBoardLayout(firstPlayer.id, 'scrabble');
@@ -61,14 +63,11 @@ assert.equal(firstRackAfter.some((tile) => exchangeIds.includes(tile.id)), false
 
 const resetResult = room.resetGame(firstPlayer.id);
 assert.equal(resetResult.ok, true);
-if (resetResult.ok) {
-  assert.equal(resetResult.evictedPlayers.length, 1);
-  assert.equal(resetResult.evictedPlayers[0]?.id, secondPlayer.id);
-}
 
 state = room.snapshot();
-assert.equal(state.players.length, 1);
+assert.equal(state.players.length, 2);
 assert.equal(state.players[0]?.id, firstPlayer.id);
+assert.equal(state.players[1]?.id, secondPlayer.id);
 assert.equal(state.currentPlayerId, firstPlayer.id);
 assert.equal(state.teamScore, 0);
 assert.equal(state.turnHistory.length, 0);
@@ -77,8 +76,8 @@ assert.equal(state.boardLayout, 'words-with-friends');
 assert.equal(state.canChangeBoardLayout, true);
 
 const finalRoundSeed = new GameRoom('final-round');
-const finalRoundFirst = finalRoundSeed.addPlayer(null, 'final-session-1');
-const finalRoundSecond = finalRoundSeed.addPlayer(null, 'final-session-2');
+const finalRoundFirst = finalRoundSeed.addPlayer({ id: 'account-c', name: 'Casey' }, 0, null);
+const finalRoundSecond = finalRoundSeed.addPlayer({ id: 'account-d', name: 'Drew' }, 1, null);
 const finalRoundPersisted = finalRoundSeed.toPersistedState();
 finalRoundPersisted.bag = [];
 finalRoundPersisted.lastMove = null;
@@ -111,22 +110,12 @@ assert.equal(state.finalTurnsRemaining, 0);
 assert.equal(state.currentPlayerId, null);
 assert.equal(finalRoundRoom.passTurn(finalRoundSecond.id), 'Game is over.');
 
-const reclaimRoom = new GameRoom('reclaim-room');
-const reclaimFirst = reclaimRoom.addPlayer(null, 'reclaim-session-1');
-const reclaimSecond = reclaimRoom.addPlayer(null, 'reclaim-session-2');
-assert.equal(reclaimRoom.hasOpenSeat(), false);
-assert.equal(reclaimRoom.disconnectedPlayerId(), null);
-
-reclaimRoom.disconnectPlayer(reclaimSecond.id);
-assert.equal(reclaimRoom.disconnectedPlayerId(), reclaimSecond.id);
-
-const reclaimedSeat = reclaimRoom.claimDisconnectedSeat(reclaimSecond.id, null, 'reclaim-session-3');
-assert.equal(reclaimedSeat?.id, reclaimSecond.id);
-assert.equal(reclaimedSeat?.sessionId, 'reclaim-session-3');
-assert.equal(reclaimedSeat?.connected, true);
-assert.equal(reclaimRoom.assignments().some((assignment) => assignment.sessionId === 'reclaim-session-2'), false);
-assert.equal(reclaimRoom.assignments().some((assignment) => assignment.sessionId === 'reclaim-session-3'), true);
-
-assert.equal(reclaimRoom.claimDisconnectedSeat(reclaimFirst.id, null, 'reclaim-session-4'), null);
+const reconnectRoom = new GameRoom('reconnect-room');
+const reconnectFirst = reconnectRoom.addPlayer({ id: 'account-e', name: 'Em' }, 0, null);
+const reconnectSecond = reconnectRoom.addPlayer({ id: 'account-f', name: 'Finn' }, 1, null);
+assert.equal(reconnectRoom.getPlayerByAccountId('account-e')?.id, reconnectFirst.id);
+assert.equal(reconnectRoom.getPlayerByAccountId('account-f')?.id, reconnectSecond.id);
+assert.equal(reconnectRoom.summaryFor('account-e')?.opponentName, 'Finn');
+assert.equal(reconnectRoom.summaryFor('account-f')?.opponentName, 'Em');
 
 console.log('Game room tests passed.');

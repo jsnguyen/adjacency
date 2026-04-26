@@ -21,12 +21,40 @@ export type TileHolderState = {
 
 export type PlayerPublicState = {
   id: string;
+  accountId: string;
+  accountName: string;
+  seat: number;
   rack: TileHolderState;
   connected: boolean;
 };
 
+export type AccountState = {
+  id: string;
+  name: string;
+};
+
+export type GameParticipantState = {
+  id: string;
+  accountId: string;
+  accountName: string;
+  seat: number;
+  connected: boolean;
+};
+
+export type GameSummaryState = {
+  gameId: string;
+  players: GameParticipantState[];
+  currentPlayerId: string | null;
+  gameEnded: boolean;
+  opponentName: string | null;
+  yourTurn: boolean;
+  teamScore: number;
+  updatedAt: string;
+};
+
 export type LastMoveState = {
   playerId: string;
+  playerName: string;
   words: string[];
   score: number;
   message: string;
@@ -89,6 +117,7 @@ export type MovePreviewState = {
 export type TurnHistoryEntryState = {
   turn: number;
   playerId: string;
+  playerName: string;
   kind: 'play' | 'pass' | 'exchange' | 'reset';
   words: TurnWordScoreState[];
   totalScore: number;
@@ -96,7 +125,7 @@ export type TurnHistoryEntryState = {
 };
 
 export type GameState = {
-  roomId: string;
+  gameId: string;
   board: TileHolderState;
   players: PlayerPublicState[];
   currentPlayerId: string | null;

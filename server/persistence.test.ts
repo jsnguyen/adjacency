@@ -1,35 +1,26 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { GameRoom } from './index.ts';
-import { loadPersistedRooms, savePersistedRooms } from './persistence.ts';
+import { loadPersistedGames, loginAccount, savePersistedGames } from './database.ts';
 
-const tempDir = mkdtempSync(join(tmpdir(), 'adjacency-state-'));
-const previousStatePath = process.env.ADJACENCY_STATE_PATH;
-process.env.ADJACENCY_STATE_PATH = join(tempDir, 'rooms.json');
+const { account: accountA } = loginAccount('Persist Alpha');
+const { account: accountB } = loginAccount('Persist Beta');
 
-try {
-  const room = new GameRoom('persist-test');
-  room.addPlayer(null, 'session-persist');
+const room = new GameRoom('persist-test');
+room.addPlayer(accountA, 0, null);
+room.addPlayer(accountB, 1, null);
 
-  savePersistedRooms([room.toPersistedState()]);
-  const persistedRooms = loadPersistedRooms();
-  assert.equal(persistedRooms.length, 1);
+savePersistedGames([room.toPersistedState()]);
+const persistedGames = loadPersistedGames();
+assert.equal(persistedGames.length, 1);
 
-  const restored = GameRoom.fromPersistedState(persistedRooms[0]);
-  const snapshot = restored.snapshot();
-  assert.equal(snapshot.roomId, 'persist-test');
-  assert.equal(snapshot.players.length, 1);
-  assert.equal(snapshot.players[0].rack.tiles.length, 7);
-  assert.equal(restored.assignments()[0]?.sessionId, 'session-persist');
-} finally {
-  if (previousStatePath === undefined) {
-    delete process.env.ADJACENCY_STATE_PATH;
-  } else {
-    process.env.ADJACENCY_STATE_PATH = previousStatePath;
-  }
-  rmSync(tempDir, { recursive: true, force: true });
-}
+const restored = GameRoom.fromPersistedState(persistedGames[0]);
+const snapshot = restored.snapshot();
+assert.equal(snapshot.gameId, 'persist-test');
+assert.equal(snapshot.players.length, 2);
+assert.equal(snapshot.players[0]?.accountName, 'Persist Alpha');
+assert.equal(snapshot.players[1]?.accountName, 'Persist Beta');
+assert.equal(snapshot.players[0]?.rack.tiles.length, 7);
+assert.equal(restored.assignments()[0]?.accountId, accountA.id);
+assert.equal(restored.assignments()[1]?.accountId, accountB.id);
 
 console.log('Persistence tests passed.');

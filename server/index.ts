@@ -10,7 +10,9 @@ import type { Letter } from '../shared/letters.ts';
 import { isBoardLayoutType, type BoardLayoutType } from '../shared/boardBonuses.ts';
 import type { ClientMessage, ServerMessage } from '../shared/protocol.ts';
 import type {
+  AccountState,
   GameState,
+  GameSummaryState,
   LastMoveState,
   MovePreviewState,
   PlayerPublicState,
@@ -28,27 +30,33 @@ import {
   validateMove,
 } from './rules.ts';
 import type { LetterTileState } from './rules.ts';
-import { loadPersistedRooms, savePersistedRooms, type PersistedRoomState } from './persistence.ts';
+import {
+  accountByName,
+  accountBySession,
+  loadPersistedGames,
+  loginAccount,
+  savePersistedGames,
+  type PersistedGameState,
+} from './database.ts';
 
 const PORT = Number(process.env.PORT ?? 8080);
 const HOST = process.env.HOST ?? '0.0.0.0';
-const DEFAULT_ROOM_ID = 'main';
 const DIST_DIR = resolve(fileURLToPath(new URL('../dist', import.meta.url)));
 const dictionary = loadDictionary();
 const server = createServer(handleHttpRequest);
 const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
 const rooms = new Map<string, GameRoom>();
-const socketAssignments = new Map<WebSocket, { room: GameRoom; playerId: string }>();
+const socketAssignments = new Map<WebSocket, { room: GameRoom; playerId: string; accountId: string }>();
 const heartbeatIntervalMs = 30_000;
-const sessionAssignments = new Map<string, { roomId: string; playerId: string }>();
-const ROOM_CAPACITY = 2;
 const isMainModule = process.argv[1]
   ? import.meta.url === pathToFileURL(process.argv[1]).href
   : false;
 
 type Player = {
   id: string;
-  sessionId: string;
+  accountId: string;
+  accountName: string;
+  seat: number;
   socket: LiveSocket | null;
   rack: LetterTileState[];
   connected: boolean;
@@ -73,6 +81,8 @@ export class GameRoom {
   private lastMove: LastMoveState = null;
   private turnHistory: TurnHistoryEntryState[] = [];
   private nextTurnNumber = 1;
+  private createdAt = new Date().toISOString();
+  private updatedAt = this.createdAt;
   private readonly onChange: (() => void) | null;
 
   constructor(id: string, onChange: (() => void) | null = null) {
@@ -81,13 +91,15 @@ export class GameRoom {
     this.bag = shuffle(createBag());
   }
 
-  addPlayer(socket: LiveSocket | null, sessionId: string): Player {
+  addPlayer(account: AccountState, seat: number, socket: LiveSocket | null = null): Player {
     const player: Player = {
       id: randomUUID(),
-      sessionId,
+      accountId: account.id,
+      accountName: account.name,
+      seat,
       socket,
       rack: [],
-      connected: true,
+      connected: socket !== null,
     };
     this.drawRack(player);
     this.players.set(player.id, player);
@@ -123,16 +135,16 @@ export class GameRoom {
     return this.players.size === 0;
   }
 
-  hasOpenSeat(): boolean {
-    return this.players.size < ROOM_CAPACITY;
-  }
-
   getPlayer(playerId: string): Player | undefined {
     return this.players.get(playerId);
   }
 
-  reconnectPlayer(playerId: string, socket: LiveSocket): Player | null {
-    const player = this.players.get(playerId);
+  getPlayerByAccountId(accountId: string): Player | undefined {
+    return [...this.players.values()].find((player) => player.accountId === accountId);
+  }
+
+  reconnectAccount(accountId: string, socket: LiveSocket): Player | null {
+    const player = this.getPlayerByAccountId(accountId);
     if (!player) return null;
 
     if (player.socket && player.socket !== socket) {
@@ -142,30 +154,6 @@ export class GameRoom {
 
     player.socket = socket;
     player.connected = true;
-    return player;
-  }
-
-  disconnectedPlayerId(): string | null {
-    for (const playerId of this.turnOrder) {
-      const player = this.players.get(playerId);
-      if (player && !player.connected) return playerId;
-    }
-
-    for (const player of this.players.values()) {
-      if (!player.connected) return player.id;
-    }
-
-    return null;
-  }
-
-  claimDisconnectedSeat(playerId: string, socket: LiveSocket | null, sessionId: string): Player | null {
-    const player = this.players.get(playerId);
-    if (!player || player.connected) return null;
-
-    player.sessionId = sessionId;
-    player.socket = socket;
-    player.connected = true;
-    this.markChanged();
     return player;
   }
 
@@ -201,12 +189,14 @@ export class GameRoom {
     const wordScores = buildWordScores(result.wordRuns);
     this.lastMove = {
       playerId,
+      playerName: player.accountName,
       words: result.words,
       score: result.score,
       message: `Played ${result.words.join(', ')} for ${result.score} points.`,
     };
     this.recordTurn({
       playerId,
+      playerName: player.accountName,
       kind: 'play',
       words: wordScores,
       totalScore: result.score,
@@ -261,12 +251,14 @@ export class GameRoom {
 
     this.lastMove = {
       playerId,
+      playerName: this.players.get(playerId)?.accountName ?? 'Unknown',
       words: [],
       score: 0,
       message: 'Passed.',
     };
     this.recordTurn({
       playerId,
+      playerName: this.players.get(playerId)?.accountName ?? 'Unknown',
       kind: 'pass',
       words: [],
       totalScore: 0,
@@ -301,12 +293,14 @@ export class GameRoom {
 
     this.lastMove = {
       playerId,
+      playerName: player.accountName,
       words: [],
       score: 0,
       message: `Exchanged ${uniqueTileIds.length} tile${uniqueTileIds.length === 1 ? '' : 's'}.`,
     };
     this.recordTurn({
       playerId,
+      playerName: player.accountName,
       kind: 'exchange',
       words: [],
       totalScore: 0,
@@ -326,11 +320,9 @@ export class GameRoom {
     return null;
   }
 
-  resetGame(playerId: string): { ok: true; evictedPlayers: Player[] } | { ok: false; reason: string } {
+  resetGame(playerId: string): { ok: true } | { ok: false; reason: string } {
     const resetPlayer = this.players.get(playerId);
     if (!resetPlayer) return { ok: false, reason: 'Unknown player.' };
-
-    const evictedPlayers = [...this.players.values()].filter((player) => player.id !== playerId);
 
     this.board.clear();
     this.bag = shuffle(createBag());
@@ -340,18 +332,18 @@ export class GameRoom {
     this.turnHistory = [];
     this.nextTurnNumber = 1;
     this.lastMove = null;
-    this.turnOrder = [playerId];
-    this.currentTurnIndex = 0;
+    this.turnOrder = [...this.players.values()]
+      .sort((left, right) => left.seat - right.seat)
+      .map((player) => player.id);
+    this.currentTurnIndex = Math.max(0, this.turnOrder.indexOf(playerId));
 
-    for (const evictedPlayer of evictedPlayers) {
-      this.players.delete(evictedPlayer.id);
+    for (const player of this.players.values()) {
+      player.rack = [];
+      this.drawRack(player);
     }
 
-    resetPlayer.rack = [];
-    this.drawRack(resetPlayer);
-
     this.markChanged();
-    return { ok: true, evictedPlayers };
+    return { ok: true };
   }
 
   sendState(socket: WebSocket): void {
@@ -363,6 +355,35 @@ export class GameRoom {
     for (const player of this.players.values()) {
       send(player.socket, { type: 'game_state', state });
     }
+  }
+
+  hasParticipant(accountId: string): boolean {
+    return [...this.players.values()].some((player) => player.accountId === accountId);
+  }
+
+  summaryFor(accountId: string): GameSummaryState | null {
+    const player = this.getPlayerByAccountId(accountId);
+    if (!player) return null;
+
+    const opponent = [...this.players.values()].find((candidate) => candidate.accountId !== accountId);
+    return {
+      gameId: this.id,
+      players: [...this.players.values()]
+        .sort((left, right) => left.seat - right.seat)
+        .map((candidate) => ({
+          id: candidate.id,
+          accountId: candidate.accountId,
+          accountName: candidate.accountName,
+          seat: candidate.seat,
+          connected: candidate.connected,
+        })),
+      currentPlayerId: this.currentPlayerId(),
+      opponentName: opponent?.accountName ?? 'Waiting for opponent',
+      yourTurn: this.currentPlayerId() === player.id,
+      gameEnded: this.gameEnded,
+      teamScore: this.teamScore,
+      updatedAt: this.updatedAt,
+    };
   }
 
   private currentPlayerId(): string | null {
@@ -396,19 +417,24 @@ export class GameRoom {
 
   snapshot(): GameState {
     return {
-      roomId: this.id,
+      gameId: this.id,
       board: {
         name: 'board',
         tiles: [...this.board.values()].sort(sortTiles),
       },
-      players: [...this.players.values()].map((player): PlayerPublicState => ({
-        id: player.id,
-        connected: player.connected,
-        rack: {
-          name: 'hand',
-          tiles: [...player.rack].sort(sortTiles),
-        },
-      })),
+      players: [...this.players.values()]
+        .sort((left, right) => left.seat - right.seat)
+        .map((player): PlayerPublicState => ({
+          id: player.id,
+          accountId: player.accountId,
+          accountName: player.accountName,
+          seat: player.seat,
+          connected: player.connected,
+          rack: {
+            name: 'hand',
+            tiles: [...player.rack].sort(sortTiles),
+          },
+        })),
       currentPlayerId: this.currentPlayerId(),
       gameEnded: this.gameEnded,
       finalTurnsRemaining: this.finalTurnsRemaining,
@@ -421,20 +447,22 @@ export class GameRoom {
     };
   }
 
-  assignments(): Array<{ playerId: string; sessionId: string }> {
+  assignments(): Array<{ playerId: string; accountId: string }> {
     return [...this.players.values()].map((player) => ({
       playerId: player.id,
-      sessionId: player.sessionId,
+      accountId: player.accountId,
     }));
   }
 
-  toPersistedState(): PersistedRoomState {
+  toPersistedState(): PersistedGameState {
     return {
       id: this.id,
       board: [...this.board.values()].sort(sortTiles),
       players: [...this.players.values()].map((player) => ({
         id: player.id,
-        sessionId: player.sessionId,
+        accountId: player.accountId,
+        accountName: player.accountName,
+        seat: player.seat,
         rack: [...player.rack].sort(sortTiles),
       })),
       turnOrder: [...this.turnOrder],
@@ -448,12 +476,13 @@ export class GameRoom {
       lastMove: this.lastMove,
       turnHistory: [...this.turnHistory],
       nextTurnNumber: this.nextTurnNumber,
-      updatedAt: new Date().toISOString(),
+      createdAt: this.createdAt,
+      updatedAt: this.updatedAt,
     };
   }
 
   static fromPersistedState(
-    state: PersistedRoomState,
+    state: PersistedGameState,
     onChange: (() => void) | null = null,
   ): GameRoom {
     const room = new GameRoom(state.id, onChange);
@@ -461,7 +490,9 @@ export class GameRoom {
     room.players = new Map(
       state.players.map((player) => [player.id, {
         id: player.id,
-        sessionId: player.sessionId,
+        accountId: player.accountId,
+        accountName: player.accountName,
+        seat: player.seat,
         socket: null,
         rack: [...player.rack].sort(sortTiles),
         connected: false,
@@ -483,6 +514,8 @@ export class GameRoom {
     room.lastMove = state.lastMove;
     room.turnHistory = [...state.turnHistory];
     room.nextTurnNumber = state.nextTurnNumber;
+    room.createdAt = state.createdAt;
+    room.updatedAt = state.updatedAt;
     return room;
   }
 
@@ -526,6 +559,7 @@ export class GameRoom {
   }
 
   private markChanged(): void {
+    this.updatedAt = new Date().toISOString();
     this.onChange?.();
   }
 
@@ -540,64 +574,56 @@ export class GameRoom {
   }
 }
 
-function getRoom(roomId: string): GameRoom {
-  const existingRoom = rooms.get(roomId);
-  if (existingRoom) return existingRoom;
-
-  const room = new GameRoom(roomId, persistRooms);
-  rooms.set(roomId, room);
-  persistRooms();
-  return room;
+function getGame(gameId: string): GameRoom | null {
+  const normalizedGameId = normalizeGameId(gameId);
+  if (!normalizedGameId) return null;
+  return rooms.get(normalizedGameId) ?? null;
 }
 
-function joinRoom(socket: LiveSocket, roomId: string, requestedSessionId?: string): void {
-  const normalisedRoomId = normaliseRoomId(roomId);
-  if (!normalisedRoomId) {
-    send(socket, { type: 'error', msg: 'Room names can use letters, numbers, underscores, and dashes only.' });
-    return;
-  }
-
-  const reconnectPlayer = requestedSessionId
-    ? reconnectExistingPlayer(socket, requestedSessionId, normalisedRoomId)
-    : null;
-  if (reconnectPlayer) return;
-
-  const room = getRoom(normalisedRoomId);
-  const disconnectedSeatId = room.hasOpenSeat() ? null : room.disconnectedPlayerId();
-  if (!room.hasOpenSeat() && !disconnectedSeatId) {
-    send(socket, { type: 'error', msg: 'Room is full. Each room supports 2 players.' });
-    return;
-  }
-
-  leaveAssignedRoom(socket);
-
-  if (disconnectedSeatId) {
-    const previousSessionId = room.getPlayer(disconnectedSeatId)?.sessionId;
-    const sessionId = randomUUID();
-    const player = room.claimDisconnectedSeat(disconnectedSeatId, socket, sessionId);
-    if (!player) {
-      send(socket, { type: 'error', msg: 'Room is full. Each room supports 2 players.' });
-      return;
-    }
-    if (previousSessionId) {
-      sessionAssignments.delete(previousSessionId);
-    }
-    sessionAssignments.set(sessionId, { roomId: room.id, playerId: player.id });
-    socketAssignments.set(socket, { room, playerId: player.id });
-    send(socket, { type: 'player_id', playerId: player.id, sessionId, roomId: room.id });
-    room.broadcastState();
-    return;
-  }
-
-  const sessionId = randomUUID();
-  const player = room.addPlayer(socket, sessionId);
-  sessionAssignments.set(sessionId, { roomId: room.id, playerId: player.id });
-  socketAssignments.set(socket, { room, playerId: player.id });
-  send(socket, { type: 'player_id', playerId: player.id, sessionId, roomId: room.id });
-  room.broadcastState();
+function listGamesForAccount(accountId: string): GameSummaryState[] {
+  return [...rooms.values()]
+    .map((room) => room.summaryFor(accountId))
+    .filter((summary): summary is GameSummaryState => summary !== null)
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
-function leaveAssignedRoom(socket: WebSocket): void {
+function createGame(creator: AccountState, opponent: AccountState): GameRoom {
+  const game = new GameRoom(randomUUID(), persistGames);
+  game.addPlayer(creator, 0, null);
+  game.addPlayer(opponent, 1, null);
+  rooms.set(game.id, game);
+  persistGames();
+  return game;
+}
+
+function attachSocketToGame(socket: LiveSocket, sessionToken: string, gameId: string): void {
+  const account = accountBySession(sessionToken);
+  if (!account) {
+    send(socket, { type: 'error', msg: 'Sign in again to continue.' });
+    socket.close(1008, 'Invalid session.');
+    return;
+  }
+
+  const game = getGame(gameId);
+  if (!game) {
+    send(socket, { type: 'error', msg: 'Game not found.' });
+    socket.close(1008, 'Unknown game.');
+    return;
+  }
+
+  const player = game.reconnectAccount(account.id, socket);
+  if (!player) {
+    send(socket, { type: 'error', msg: 'This account is not a player in that game.' });
+    socket.close(1008, 'Account not in game.');
+    return;
+  }
+
+  leaveAssignedGame(socket);
+  socketAssignments.set(socket, { room: game, playerId: player.id, accountId: account.id });
+  game.broadcastState();
+}
+
+function leaveAssignedGame(socket: WebSocket): void {
   const assignment = socketAssignments.get(socket);
   if (!assignment) return;
 
@@ -611,29 +637,23 @@ function send(socket: WebSocket | null | undefined, msg: ServerMessage): void {
   }
 }
 
-function rejectTurn(socket: WebSocket, _room: GameRoom, reason: string): void {
+function rejectTurn(socket: WebSocket, reason: string): void {
   send(socket, { type: 'turn_rejected', reason });
-  void _room;
 }
 
 function handleMessage(socket: LiveSocket, msg: ClientMessage): void {
-  if (msg.type === 'join_room') {
-    joinRoom(socket, msg.roomId, msg.sessionId);
-    return;
-  }
-
   const assignment = socketAssignments.get(socket);
   if (!assignment) {
-    send(socket, { type: 'error', msg: 'Join a room before sending game actions.' });
+    send(socket, { type: 'error', msg: 'Select a game before sending moves.' });
     return;
   }
 
-  const { room } = assignment;
+  const { room, playerId } = assignment;
   switch (msg.type) {
     case 'play_turn': {
-      const reason = room.playTurn(msg.playerId, msg.boardState, msg.handState);
+      const reason = room.playTurn(playerId, msg.boardState, msg.handState);
       if (reason) {
-        rejectTurn(socket, room, reason);
+        rejectTurn(socket, reason);
       } else {
         room.broadcastState();
       }
@@ -642,54 +662,43 @@ function handleMessage(socket: LiveSocket, msg: ClientMessage): void {
     case 'preview_turn': {
       send(socket, {
         type: 'move_preview',
-        preview: room.previewTurn(msg.playerId, msg.boardState, msg.handState),
+        preview: room.previewTurn(playerId, msg.boardState, msg.handState),
         requestId: msg.requestId,
       });
       break;
     }
     case 'pass_turn': {
-      const reason = room.passTurn(msg.playerId);
+      const reason = room.passTurn(playerId);
       if (reason) {
-        rejectTurn(socket, room, reason);
+        rejectTurn(socket, reason);
       } else {
         room.broadcastState();
       }
       break;
     }
     case 'exchange_tiles': {
-      const reason = room.exchangeTiles(msg.playerId, msg.tileIds);
+      const reason = room.exchangeTiles(playerId, msg.tileIds);
       if (reason) {
-        rejectTurn(socket, room, reason);
+        rejectTurn(socket, reason);
       } else {
         room.broadcastState();
       }
       break;
     }
     case 'set_board_layout': {
-      const reason = room.setBoardLayout(msg.playerId, msg.layout);
+      const reason = room.setBoardLayout(playerId, msg.layout);
       if (reason) {
-        rejectTurn(socket, room, reason);
+        rejectTurn(socket, reason);
       } else {
         room.broadcastState();
       }
       break;
     }
     case 'reset_game': {
-      const result = room.resetGame(msg.playerId);
+      const result = room.resetGame(playerId);
       if (!result.ok) {
-        rejectTurn(socket, room, result.reason);
+        rejectTurn(socket, result.reason);
       } else {
-        for (const evictedPlayer of result.evictedPlayers) {
-          sessionAssignments.delete(evictedPlayer.sessionId);
-          if (evictedPlayer.socket) {
-            socketAssignments.delete(evictedPlayer.socket);
-            send(evictedPlayer.socket, {
-              type: 'removed_from_room',
-              roomId: room.id,
-              msg: 'The room was reset. Rejoin to keep playing.',
-            });
-          }
-        }
         room.broadcastState();
       }
       break;
@@ -765,17 +774,14 @@ function buildWordScores(words: MovePreviewState['words']): TurnWordScoreState[]
   }));
 }
 
-function persistRooms(): void {
-  savePersistedRooms([...rooms.values()].map((room) => room.toPersistedState()));
+function persistGames(): void {
+  savePersistedGames([...rooms.values()].map((room) => room.toPersistedState()));
 }
 
-function restoreRooms(): void {
-  for (const persistedRoom of loadPersistedRooms()) {
-    const room = GameRoom.fromPersistedState(persistedRoom, persistRooms);
+function restoreGames(): void {
+  for (const persistedGame of loadPersistedGames()) {
+    const room = GameRoom.fromPersistedState(persistedGame, persistGames);
     rooms.set(room.id, room);
-    for (const assignment of room.assignments()) {
-      sessionAssignments.set(assignment.sessionId, { roomId: room.id, playerId: assignment.playerId });
-    }
   }
 }
 
@@ -787,9 +793,14 @@ wss.on('connection', (socket: WebSocket, request: IncomingMessage) => {
   });
 
   const requestUrl = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
-  const requestedRoomId = requestUrl.searchParams.get('room') ?? DEFAULT_ROOM_ID;
-  const requestedSessionId = requestUrl.searchParams.get('session') ?? undefined;
-  joinRoom(liveSocket, requestedRoomId, requestedSessionId);
+  const requestedGameId = requestUrl.searchParams.get('game');
+  const requestedSessionToken = requestUrl.searchParams.get('session');
+  if (!requestedGameId || !requestedSessionToken) {
+    send(liveSocket, { type: 'error', msg: 'Missing game or session.' });
+    liveSocket.close(1008, 'Missing game or session.');
+    return;
+  }
+  attachSocketToGame(liveSocket, requestedSessionToken, requestedGameId);
 
   liveSocket.on('message', (raw) => {
     let msg: unknown;
@@ -809,7 +820,7 @@ wss.on('connection', (socket: WebSocket, request: IncomingMessage) => {
   });
 
   liveSocket.on('close', () => {
-    leaveAssignedRoom(liveSocket);
+    leaveAssignedGame(liveSocket);
   });
 });
 
@@ -844,7 +855,7 @@ heartbeat.unref();
 
 export function startServer(): void {
   if (rooms.size === 0) {
-    restoreRooms();
+    restoreGames();
   }
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
@@ -859,9 +870,26 @@ function handleHttpRequest(request: IncomingMessage, response: ServerResponse): 
   if (request.url === '/health') {
     sendJson(response, 200, {
       ok: true,
-      rooms: rooms.size,
+      games: rooms.size,
       dictionaryWords: dictionary.words.size,
     });
+    return;
+  }
+
+  const requestUrl = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
+
+  if (requestUrl.pathname === '/api/account/login' && request.method === 'POST') {
+    void handleAccountLogin(request, response);
+    return;
+  }
+
+  if (requestUrl.pathname === '/api/account/overview' && request.method === 'GET') {
+    handleAccountOverview(requestUrl, response);
+    return;
+  }
+
+  if (requestUrl.pathname === '/api/games' && request.method === 'POST') {
+    void handleCreateGame(request, response);
     return;
   }
 
@@ -871,7 +899,6 @@ function handleHttpRequest(request: IncomingMessage, response: ServerResponse): 
     return;
   }
 
-  const requestUrl = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
   if (requestUrl.pathname === '/ws') {
     response.writeHead(426, { 'Content-Type': 'text/plain; charset=utf-8' });
     response.end('Use a WebSocket connection for /ws.');
@@ -900,6 +927,70 @@ function handleHttpRequest(request: IncomingMessage, response: ServerResponse): 
   }
 
   createReadStream(target).pipe(response);
+}
+
+async function handleAccountLogin(request: IncomingMessage, response: ServerResponse): Promise<void> {
+  const body = await readJsonBody(request);
+  const accountName = typeof body.accountName === 'string' ? body.accountName : '';
+
+  try {
+    const { account, sessionToken } = loginAccount(accountName);
+    sendJson(response, 200, {
+      account,
+      sessionToken,
+      games: listGamesForAccount(account.id),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Could not sign in.';
+    sendJson(response, 400, { msg: message });
+  }
+}
+
+function handleAccountOverview(requestUrl: URL, response: ServerResponse): void {
+  const sessionToken = requestUrl.searchParams.get('session');
+  if (!sessionToken) {
+    sendJson(response, 400, { msg: 'Missing session token.' });
+    return;
+  }
+
+  const account = accountBySession(sessionToken);
+  if (!account) {
+    sendJson(response, 401, { msg: 'Session expired.' });
+    return;
+  }
+
+  sendJson(response, 200, {
+    account,
+    games: listGamesForAccount(account.id),
+  });
+}
+
+async function handleCreateGame(request: IncomingMessage, response: ServerResponse): Promise<void> {
+  const body = await readJsonBody(request);
+  const sessionToken = typeof body.sessionToken === 'string' ? body.sessionToken : '';
+  const opponentName = typeof body.opponentName === 'string' ? body.opponentName : '';
+
+  const account = accountBySession(sessionToken);
+  if (!account) {
+    sendJson(response, 401, { msg: 'Session expired.' });
+    return;
+  }
+
+  const opponent = accountByName(opponentName);
+  if (!opponent) {
+    sendJson(response, 404, { msg: 'That account does not exist yet.' });
+    return;
+  }
+  if (opponent.id === account.id) {
+    sendJson(response, 400, { msg: 'Choose another account to start a game.' });
+    return;
+  }
+
+  const game = createGame(account, opponent);
+  sendJson(response, 200, {
+    game: game.summaryFor(account.id),
+    games: listGamesForAccount(account.id),
+  });
 }
 
 function staticFilePath(pathname: string): string | null {
@@ -954,50 +1045,55 @@ function sendJson(response: ServerResponse, status: number, body: unknown): void
   response.end(JSON.stringify(body));
 }
 
-function normaliseRoomId(roomId: string): string | null {
-  const trimmedRoomId = roomId.trim();
-  if (!/^[A-Za-z0-9_-]{1,64}$/.test(trimmedRoomId)) return null;
-  return trimmedRoomId;
+async function readJsonBody(request: IncomingMessage): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+
+  if (chunks.length === 0) return {};
+
+  try {
+    const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
+    return isRecord(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function normalizeGameId(gameId: string): string | null {
+  const trimmedGameId = gameId.trim();
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(trimmedGameId)) return null;
+  return trimmedGameId;
 }
 
 function isClientMessage(value: unknown): value is ClientMessage {
   if (!isRecord(value) || typeof value.type !== 'string') return false;
 
   switch (value.type) {
-    case 'join_room':
-      return (
-        typeof value.roomId === 'string' &&
-        (value.sessionId === undefined || typeof value.sessionId === 'string')
-      );
     case 'play_turn':
       return (
-        typeof value.playerId === 'string' &&
         isTileHolderState(value.handState) &&
         isTileHolderState(value.boardState)
       );
     case 'preview_turn':
       return (
-        typeof value.playerId === 'string' &&
         Number.isInteger(value.requestId) &&
         isTileHolderState(value.handState) &&
         isTileHolderState(value.boardState)
       );
     case 'pass_turn':
-      return typeof value.playerId === 'string';
+      return true;
     case 'exchange_tiles':
       return (
-        typeof value.playerId === 'string' &&
         Array.isArray(value.tileIds) &&
         value.tileIds.length <= RACK_SIZE &&
         value.tileIds.every((tileId) => typeof tileId === 'string')
       );
     case 'set_board_layout':
-      return (
-        typeof value.playerId === 'string' &&
-        isBoardLayoutType(value.layout)
-      );
+      return isBoardLayoutType(value.layout);
     case 'reset_game':
-      return typeof value.playerId === 'string';
+      return true;
     default:
       return false;
   }
@@ -1040,24 +1136,6 @@ function shutdown(signal: string): void {
   setTimeout(() => {
     process.exit(1);
   }, 5000).unref();
-}
-
-function reconnectExistingPlayer(socket: LiveSocket, sessionId: string, requestedRoomId: string): Player | null {
-  const assignment = sessionAssignments.get(sessionId);
-  if (!assignment) return null;
-  if (assignment.roomId !== requestedRoomId) return null;
-
-  const room = rooms.get(assignment.roomId);
-  const player = room?.reconnectPlayer(assignment.playerId, socket);
-  if (!room || !player) {
-    sessionAssignments.delete(sessionId);
-    return null;
-  }
-
-  socketAssignments.set(socket, { room, playerId: player.id });
-  send(socket, { type: 'player_id', playerId: player.id, sessionId: player.sessionId, roomId: room.id });
-  room.broadcastState();
-  return player;
 }
 
 if (isMainModule) {

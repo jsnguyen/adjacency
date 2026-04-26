@@ -1,5 +1,5 @@
 import { GRID, APP_WIDTH, BOARD_HEIGHT_PX, BOARD_WIDTH_PX, TILE_SIZE } from './constants.ts'
-import type { ClientMessage, ServerMessage } from '../shared/protocol.ts'
+import type { ClientMessage } from '../shared/protocol.ts'
 import type {
   GameState,
   MovePreviewState,
@@ -15,29 +15,53 @@ import { createBoardZoomController } from './boardZoom.ts'
 import { gridCoordsToTileHolderCoords } from './coordinates.ts'
 import { Hand } from './hand.ts'
 import { premiumSquareAt, premiumSquareLabel, type BoardLayoutType } from '../shared/boardBonuses.ts'
-import { readSessionCookie, writeSessionCookie } from './sessionCookie.ts'
+import { clearSessionCookie, readSessionCookie, writeSessionCookie } from './sessionCookie.ts'
 import { Tile } from './tile.ts'
 import { makeDraggable } from './draggable.ts'
-import { clearPlayerId, setPlayerId, getPlayerId, hasPlayerId } from './clientState.ts'
+import {
+  clearClientState,
+  clearPlayerId,
+  getClientState,
+  getPlayerId,
+  hasPlayerId,
+  hydrateClientState,
+  setPlayerId,
+} from './clientState.ts'
+import { createGame, fetchAccountOverview, loginAccount } from './accountApi.ts'
+import {
+  describeGameSummary,
+  gameIdFromState,
+  gameSummaryFromState,
+  playerAccountName,
+  playerSeat,
+  shortGameId,
+  type GameSummary,
+} from './accountModels.ts'
+import { resolveWebSocketUrl } from './network.ts'
 
 const reconnectBaseDelayMs = 400;
 const reconnectMaxDelayMs = 8000;
 const APP_SHELL_WIDTH = `${parseInt(APP_WIDTH, 10) + 304}px`;
-const ROOM_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+const ACCOUNT_NAME_MAX_LENGTH = 64;
 const PREVIEW_DEBOUNCE_MS = 120;
-const DEFAULT_ROOM_ID = 'main';
 
-let socket: WebSocket;
+let socket: WebSocket | null = null;
 let reconnectAttempts = 0;
+let reconnectTimerId: number | null = null;
+let socketGeneration = 0;
 let latestGameState: GameState | null = null;
 let waitingForServer = false;
+let accountRequestInFlight = false;
 let statusScoreCard: HTMLDivElement;
 let statusScoreValue: HTMLDivElement;
 let statusScoreMeta: HTMLDivElement;
 let statusScoreDelta: HTMLDivElement;
-let roomInput: HTMLInputElement;
-let roomCurrentValue: HTMLSpanElement;
-let roomPlayers: HTMLDivElement;
+let accountInput: HTMLInputElement;
+let accountCurrentValue: HTMLSpanElement;
+let accountGames: HTMLDivElement;
+let accountPrimaryButton: HTMLButtonElement;
+let accountSecondaryButton: HTMLButtonElement;
+let statusNoticeValue: HTMLElement;
 let historySummary: HTMLSpanElement;
 let historyList: HTMLDivElement;
 let previewLayer: HTMLDivElement;
@@ -67,10 +91,8 @@ let latestPreviewRequestId = 0;
 let scoreAnimationFrameId: number | null = null;
 let scoreFeedbackTimerId: number | null = null;
 
-connectSocket();
-
 function sendMessageToServer(message: ClientMessage): void {
-  if (!socketIsOpen()) {
+  if (!socket || !socketIsOpen()) {
     setStatus('Socket is not open yet.');
     return;
   }
@@ -87,7 +109,14 @@ if (!appRoot) {
 const app = appRoot as HTMLDivElement;
 app.style.width = `min(calc(100vw - 28px), ${APP_SHELL_WIDTH})`;
 const initialSession = readSessionCookie();
-const initialRoomId = initialSession.roomId ?? DEFAULT_ROOM_ID;
+hydrateClientState({
+  account: initialSession.accountId && initialSession.accountName
+    ? { id: initialSession.accountId, name: initialSession.accountName }
+    : null,
+  currentGameId: initialSession.currentGameId ?? null,
+  playerId: initialSession.playerId ?? null,
+  sessionToken: initialSession.sessionToken ?? null,
+});
 
 const headerContainer = document.querySelector('.container') as HTMLDivElement | null;
 if (headerContainer) {
@@ -95,48 +124,51 @@ if (headerContainer) {
 }
 const header = document.querySelector('.header') as HTMLDivElement | null;
 
-const roomBar = document.createElement('div');
-roomBar.classList.add('room-bar');
-const roomMeta = document.createElement('div');
-roomMeta.classList.add('room-bar__meta');
-const roomIdentity = document.createElement('div');
-roomIdentity.classList.add('room-bar__room');
-const roomLabel = document.createElement('span');
-roomLabel.classList.add('room-bar__label');
-roomLabel.textContent = 'Room';
-roomCurrentValue = document.createElement('span');
-roomCurrentValue.classList.add('room-bar__current');
-roomCurrentValue.textContent = initialRoomId;
-roomPlayers = document.createElement('div');
-roomPlayers.classList.add('room-bar__players');
-roomIdentity.append(roomLabel, roomCurrentValue);
-roomMeta.append(roomIdentity, roomPlayers);
-const roomControls = document.createElement('div');
-roomControls.classList.add('room-bar__controls');
-roomInput = document.createElement('input');
-roomInput.classList.add('room-input');
-roomInput.type = 'text';
-roomInput.maxLength = 64;
-roomInput.autocomplete = 'off';
-roomInput.spellcheck = false;
-roomInput.placeholder = 'room name';
-roomInput.value = initialRoomId;
-const roomJoinButton = document.createElement('button');
-roomJoinButton.classList.add('room-button');
-roomJoinButton.type = 'button';
-roomJoinButton.textContent = 'Join';
-const roomNewButton = document.createElement('button');
-roomNewButton.classList.add('room-button', 'room-button--secondary');
-roomNewButton.type = 'button';
-roomNewButton.textContent = 'New room';
+const accountBar = document.createElement('div');
+accountBar.classList.add('room-bar');
+const accountMeta = document.createElement('div');
+accountMeta.classList.add('room-bar__meta');
+const accountIdentity = document.createElement('div');
+accountIdentity.classList.add('room-bar__room');
+const accountLabel = document.createElement('span');
+accountLabel.classList.add('room-bar__label');
+accountLabel.textContent = 'Account';
+accountCurrentValue = document.createElement('span');
+accountCurrentValue.classList.add('room-bar__current');
+accountGames = document.createElement('div');
+accountGames.classList.add('room-bar__players');
+const statusNotice = document.createElement('div');
+statusNotice.classList.add('room-player', 'room-player--empty');
+const statusNoticeLabel = document.createElement('span');
+statusNoticeLabel.classList.add('room-player__label');
+statusNoticeLabel.textContent = 'Status';
+statusNoticeValue = document.createElement('strong');
+statusNoticeValue.classList.add('room-player__value');
+accountIdentity.append(accountLabel, accountCurrentValue);
+statusNotice.append(statusNoticeLabel, statusNoticeValue);
+accountMeta.append(accountIdentity, statusNotice, accountGames);
+const accountControls = document.createElement('div');
+accountControls.classList.add('room-bar__controls');
+accountInput = document.createElement('input');
+accountInput.classList.add('room-input');
+accountInput.type = 'text';
+accountInput.maxLength = ACCOUNT_NAME_MAX_LENGTH;
+accountInput.autocomplete = 'off';
+accountInput.spellcheck = false;
+accountPrimaryButton = document.createElement('button');
+accountPrimaryButton.classList.add('room-button');
+accountPrimaryButton.type = 'button';
+accountSecondaryButton = document.createElement('button');
+accountSecondaryButton.classList.add('room-button', 'room-button--secondary');
+accountSecondaryButton.type = 'button';
 resetButton = document.createElement('button');
 resetButton.classList.add('room-button', 'room-button--reset');
 resetButton.id = 'reset-button';
 resetButton.type = 'button';
 resetButton.textContent = 'Reset';
-roomControls.append(roomInput, roomJoinButton, roomNewButton);
-roomBar.append(roomMeta, roomControls);
-app.appendChild(roomBar);
+accountControls.append(accountInput, accountPrimaryButton, accountSecondaryButton);
+accountBar.append(accountMeta, accountControls);
+app.appendChild(accountBar);
 
 if (header) {
   const headerActions = document.createElement('div');
@@ -206,7 +238,7 @@ statusScoreValue.classList.add('status-score__value');
 statusScoreValue.textContent = '0';
 statusScoreMeta = document.createElement('div');
 statusScoreMeta.classList.add('status-score__meta');
-statusScoreMeta.textContent = '0 tiles left in bag';
+statusScoreMeta.textContent = 'Choose a game to start';
 statusScoreDelta = document.createElement('div');
 statusScoreDelta.classList.add('status-score__delta');
 statusScoreDelta.setAttribute('aria-hidden', 'true');
@@ -340,17 +372,15 @@ if (playButton) {
 passButton = document.getElementById('pass-button') as HTMLButtonElement | null;
 if (passButton) {
   passButton.addEventListener('click', () => {
-    const playerId = requirePlayerId();
-    if (!playerId) return;
-    sendMessageToServer({ type: 'pass_turn', playerId });
+    if (!latestGameState || !currentPlayer(latestGameState)) return;
+    sendMessageToServer({ type: 'pass_turn' });
   });
 }
 
 exchangeButton = document.getElementById('exchange-button') as HTMLButtonElement | null;
 if (exchangeButton) {
   exchangeButton.addEventListener('click', () => {
-    const playerId = requirePlayerId();
-    if (!playerId) return;
+    if (!latestGameState || !currentPlayer(latestGameState)) return;
     const tileIds = selectedHandTileIds();
     if (tileIds.length === 0) {
       setStatus('Select rack tiles to exchange.', 'error');
@@ -358,7 +388,6 @@ if (exchangeButton) {
     }
     sendMessageToServer({
       type: 'exchange_tiles',
-      playerId,
       tileIds,
     });
   });
@@ -368,16 +397,15 @@ resetButton = document.getElementById('reset-button') as HTMLButtonElement | nul
 if (resetButton) {
   resetButton.addEventListener('click', () => {
     hideOptionsMenu();
-    if (!requirePlayerId()) return;
+    if (!latestGameState || !currentPlayer(latestGameState)) return;
     showConfirmationModal({
       title: 'Reset game?',
-      body: 'This clears the board, keeps you in the room, and removes the other player until they rejoin.',
+      body: 'This clears the board, keeps you in the game, and removes the other player until they rejoin.',
       confirmLabel: 'reset',
       confirmTone: 'reset',
       onConfirm: () => {
-        const playerId = requirePlayerId();
-        if (!playerId) return;
-        sendMessageToServer({ type: 'reset_game', playerId });
+        if (!latestGameState || !currentPlayer(latestGameState)) return;
+        sendMessageToServer({ type: 'reset_game' });
       },
     });
   });
@@ -409,20 +437,18 @@ confirmConfirmButton.addEventListener('click', () => {
   action?.();
 });
 
-roomJoinButton.addEventListener('click', () => {
-  requestRoomJoin(roomInput.value);
+accountPrimaryButton.addEventListener('click', () => {
+  void handleAccountPrimaryAction();
 });
 
-roomNewButton.addEventListener('click', () => {
-  const nextRoomId = generateRoomId();
-  roomInput.value = nextRoomId;
-  requestRoomJoin(nextRoomId);
+accountSecondaryButton.addEventListener('click', () => {
+  void handleAccountSecondaryAction();
 });
 
-roomInput.addEventListener('keydown', (event) => {
+accountInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') {
     event.preventDefault();
-    requestRoomJoin(roomInput.value);
+    void handleAccountPrimaryAction();
   }
 });
 
@@ -474,18 +500,30 @@ board.el.appendChild(previewLayer);
 
 updateActionButtons();
 renderTurnHistory([]);
-renderRoomPlayers(null, null);
+syncAccountUi();
+void restoreAccountSession();
 
 function syncGameState(state: GameState): void {
   clearMovePreview();
   const previousState = latestGameState;
   latestGameState = state;
   currentBoardLayout = state.boardLayout;
-  writeSessionCookie({ roomId: state.roomId });
-  syncRoomUi(state.roomId);
+  const liveSummary = gameSummaryFromState(state);
+  if (liveSummary) {
+    updateStoredGameSummary(liveSummary);
+    if (getClientState().currentGameId !== liveSummary.gameId) {
+      hydrateClientState({ currentGameId: liveSummary.gameId });
+    }
+  }
   renderBoardBackground(state.boardLayout);
   selectedExchangeIds = new Set();
   const player = currentPlayer(state);
+  if (player) {
+    setPlayerId(player.id);
+  } else {
+    clearPlayerId();
+  }
+  persistSessionCookie();
   const isMyTurn = Boolean(player && state.currentPlayerId === player.id);
 
   board.clearTiles();
@@ -512,11 +550,11 @@ function syncGameState(state: GameState): void {
   }
 
   updateStatusFromState(state, player, previousState);
-  renderRoomPlayers(state, player);
+  renderAccountGames();
   updateActionButtons();
 }
 
-function clearJoinedRoomState(roomId: string, message: string): void {
+function clearCurrentGameState(message: string, clearSelection = false): void {
   hideConfirmModal();
   hideOptionsMenu();
   clearMovePreview();
@@ -527,21 +565,22 @@ function clearJoinedRoomState(roomId: string, message: string): void {
   renderBoardBackground(currentBoardLayout);
   selectedExchangeIds = new Set();
   clearPlayerId();
+  if (clearSelection) {
+    hydrateClientState({ currentGameId: null });
+  }
+  persistSessionCookie();
+  if (!getClientState().currentGameId) {
+    disconnectSocket();
+  }
   app.classList.remove('app--waiting-turn');
   app.classList.remove('app--game-ended');
   syncGameOverPrompt(false);
-  writeSessionCookie({
-    roomId,
-    playerId: undefined,
-    sessionId: undefined,
-  });
-  syncRoomUi(roomId);
   board.clearTiles();
   hand.clearTiles();
-  renderRoomPlayers(null, null);
   renderTurnHistory([]);
   statusScoreValue.textContent = '0';
-  statusScoreMeta.textContent = 'Rejoin to keep playing';
+  statusScoreMeta.textContent = getClientState().currentGameId ? 'Waiting for game state' : 'Choose a game to start';
+  renderAccountGames();
   setStatus(message);
   updateActionButtons();
 }
@@ -556,6 +595,11 @@ function createTile(tileState: TileState, tileHolder: Hand | Board, played: bool
 }
 
 function currentPlayer(state: GameState): PlayerPublicState | null {
+  const { account } = getClientState();
+  if (account) {
+    const accountPlayer = state.players.find((player) => player.accountId === account.id);
+    if (accountPlayer) return accountPlayer;
+  }
   if (!hasPlayerId()) return null;
   const playerId = getPlayerId();
   return state.players.find((player) => player.id === playerId) ?? null;
@@ -593,8 +637,9 @@ function syncGameOverPrompt(gameEnded: boolean): void {
 }
 
 function syncScoreFeedback(previousState: GameState | null, state: GameState): void {
-  const sameRoom = previousState?.roomId === state.roomId;
-  const previousScore = sameRoom ? previousState.teamScore : null;
+  const previousGameId = gameIdFromState(previousState);
+  const currentGameId = gameIdFromState(state);
+  const previousScore = previousGameId && previousGameId === currentGameId ? previousState?.teamScore ?? null : null;
   const scoreGain = previousScore === null ? 0 : state.teamScore - previousScore;
 
   if (scoreGain > 0) {
@@ -737,7 +782,8 @@ function scheduleMovePreview(): void {
 }
 
 function requestMovePreview(requestId: number): void {
-  if (!latestGameState || !hasPlayerId() || !socketIsOpen()) {
+  const activeSocket = socket;
+  if (!latestGameState || !activeSocket || !socketIsOpen()) {
     clearMovePreview();
     return;
   }
@@ -753,9 +799,8 @@ function requestMovePreview(requestId: number): void {
     return;
   }
 
-  socket.send(JSON.stringify({
+  activeSocket.send(JSON.stringify({
     type: 'preview_turn',
-    playerId: getPlayerId(),
     handState: hand.getHandState(),
     boardState: board.getBoardState(),
     requestId,
@@ -834,41 +879,97 @@ function clearMovePreviewMarks(): void {
   }
 }
 
-function renderRoomPlayers(state: GameState | null, player: PlayerPublicState | null): void {
-  const slots: Array<{ label: string; player: PlayerPublicState | null }> = [
-    { label: 'Seat 1', player: state?.players[0] ?? null },
-    { label: 'Seat 2', player: state?.players[1] ?? null },
-  ];
+function syncAccountUi(): void {
+  const { account, sessionToken } = getClientState();
+  const isAuthenticated = Boolean(account && sessionToken);
+  accountCurrentValue.textContent = account?.name ?? 'Sign in';
+  accountInput.placeholder = isAuthenticated ? 'opponent account' : 'account name';
+  accountPrimaryButton.textContent = isAuthenticated ? 'New game' : 'Continue';
+  accountSecondaryButton.textContent = isAuthenticated ? 'Sign out' : 'Clear';
+  accountPrimaryButton.disabled = accountRequestInFlight;
+  accountSecondaryButton.disabled = accountRequestInFlight;
+  renderAccountGames();
+}
 
-  const slotEls = slots.map((slot) => {
-    const chip = document.createElement('div');
+function renderAccountGames(): void {
+  const { account, currentGameId, games } = getClientState();
+  if (games.length === 0) {
+    accountGames.replaceChildren(renderEmptyGameChip(account ? 'No games yet' : 'No active session'));
+    return;
+  }
+
+  const chips = games.map((game, index) => {
+    const isSelected = currentGameId === game.gameId;
+    const liveSummary = isSelected && latestGameState && gameIdFromState(latestGameState) === game.gameId
+      ? gameSummaryFromState(latestGameState) ?? game
+      : game;
+    const summary = describeGameSummary(liveSummary, account?.name ?? null);
+    const chip = document.createElement('button');
+    chip.type = 'button';
     chip.classList.add('room-player');
+    chip.style.cursor = 'pointer';
+    chip.style.textAlign = 'left';
+    chip.disabled = accountRequestInFlight;
+    if (isSelected) {
+      chip.classList.add('room-player--self');
+      chip.setAttribute('aria-pressed', 'true');
+    } else {
+      chip.setAttribute('aria-pressed', 'false');
+    }
 
     const label = document.createElement('span');
     label.classList.add('room-player__label');
-    label.textContent = slot.label;
+    label.textContent = isSelected ? 'Current game' : `Game ${index + 1}`;
 
     const value = document.createElement('strong');
     value.classList.add('room-player__value');
+    value.textContent = summary.title;
 
     const stateText = document.createElement('span');
     stateText.classList.add('room-player__state');
-
-    if (slot.player) {
-      chip.classList.toggle('room-player--self', slot.player.id === player?.id);
-      value.textContent = shortId(slot.player.id);
-      stateText.textContent = slot.player.connected ? 'connected' : 'away';
-    } else {
-      chip.classList.add('room-player--empty');
-      value.textContent = 'open';
-      stateText.textContent = 'waiting';
-    }
+    stateText.textContent = isSelected ? selectedGameStatusText(liveSummary) : summary.status;
 
     chip.append(label, value, stateText);
+    chip.addEventListener('click', () => {
+      void selectGame(game.gameId);
+    });
     return chip;
   });
 
-  roomPlayers.replaceChildren(...slotEls);
+  accountGames.replaceChildren(...chips);
+}
+
+function renderEmptyGameChip(message: string): HTMLDivElement {
+  const chip = document.createElement('div');
+  chip.classList.add('room-player', 'room-player--empty');
+
+  const label = document.createElement('span');
+  label.classList.add('room-player__label');
+  label.textContent = 'Games';
+
+  const value = document.createElement('strong');
+  value.classList.add('room-player__value');
+  value.textContent = message;
+
+  chip.append(label, value);
+  return chip;
+}
+
+function selectedGameStatusText(summary: GameSummary): string {
+  const player = latestGameState ? currentPlayer(latestGameState) : null;
+  const seatLabel = player ? `seat ${playerSeat(player) ?? 1}` : null;
+  if (summary.gameEnded) {
+    return seatLabel ? `${seatLabel} / finished` : 'finished';
+  }
+  if (!socketIsOpen()) {
+    return seatLabel ? `${seatLabel} / reconnecting` : 'reconnecting';
+  }
+  if (latestGameState) {
+    if (player && latestGameState.currentPlayerId === player.id) {
+      return seatLabel ? `${seatLabel} / your turn` : 'your turn';
+    }
+  }
+  return seatLabel ? `${seatLabel} / live` : 'live';
 }
 
 function renderTurnHistory(entries: TurnHistoryEntryState[]): void {
@@ -893,7 +994,7 @@ function renderTurnHistory(entries: TurnHistoryEntryState[]): void {
 
     const meta = document.createElement('div');
     meta.classList.add('history-entry__meta');
-    meta.textContent = `Turn ${entry.turn} - ${shortId(entry.playerId)}`;
+    meta.textContent = `Turn ${entry.turn} - ${entry.playerName || historyPlayerLabel(entry.playerId)}`;
 
     const total = document.createElement('div');
     total.classList.add('history-entry__total');
@@ -1035,40 +1136,230 @@ function formatCellPosition(col: number, row: number): string {
   return `(${col},${row})`;
 }
 
-function requestRoomJoin(candidateRoomId: string): void {
-  const roomId = candidateRoomId.trim();
-  if (!ROOM_ID_PATTERN.test(roomId)) {
-    setStatus('Room names can use letters, numbers, underscores, and dashes only.', 'error');
-    return;
-  }
-  if (latestGameState?.roomId === roomId) {
-    setStatus(`Already in room ${roomId}.`);
+async function handleAccountPrimaryAction(): Promise<void> {
+  const inputValue = accountInput.value.trim();
+  const { account, sessionToken } = getClientState();
+
+  if (account && sessionToken) {
+    if (inputValue.length === 0) {
+      setStatus('Enter another account name to create a game.', 'error');
+      return;
+    }
+    if (inputValue.toLowerCase() === account.name.toLowerCase()) {
+      setStatus('Choose another account for the new game.', 'error');
+      return;
+    }
+    await createGameWithOpponent(inputValue);
     return;
   }
 
-  clearPlayerId();
-  hideOptionsMenu();
-  clearMovePreview();
-  syncRoomUi(roomId);
-  writeSessionCookie({ roomId });
-  setStatus(`Joining room ${roomId}.`);
-  if (!socketIsOpen()) {
+  if (inputValue.length === 0) {
+    setStatus('Enter an account name.', 'error');
     return;
   }
-  const { sessionId } = readSessionCookie();
-  sendMessageToServer({
-    type: 'join_room',
-    roomId,
-    ...(sessionId ? { sessionId } : {}),
+
+  await loginOrCreateAccountByName(inputValue);
+}
+
+function handleAccountSecondaryAction(): void {
+  if (getClientState().account) {
+    signOut();
+    return;
+  }
+
+  accountInput.value = '';
+  setStatus('Enter an account name to start.');
+}
+
+async function loginOrCreateAccountByName(accountName: string): Promise<void> {
+  accountRequestInFlight = true;
+  syncAccountUi();
+  setStatus(`Signing in as ${accountName}...`);
+
+  try {
+    const previousState = getClientState();
+    const result = await loginAccount(accountName);
+    const preferredGameId = previousState.account?.id === result.account.id
+      ? previousState.currentGameId
+      : null;
+    const selectedGameId = applyAuthenticatedSession({
+      account: result.account,
+      sessionToken: result.sessionToken,
+      games: result.games,
+      preferredGameId,
+    });
+
+    accountInput.value = '';
+    if (selectedGameId) {
+      selectGame(selectedGameId);
+    } else {
+      clearCurrentGameState(
+        result.games.length > 0 ? 'Select a game or create a new one.' : 'Create a game to start playing.',
+      );
+    }
+  } catch (error) {
+    setStatus(errorMessage(error), 'error');
+  } finally {
+    accountRequestInFlight = false;
+    syncAccountUi();
+    updateActionButtons();
+  }
+}
+
+async function createGameWithOpponent(opponentName: string): Promise<void> {
+  const { account, sessionToken } = getClientState();
+  if (!account || !sessionToken) {
+    setStatus('Sign in before creating a game.', 'error');
+    return;
+  }
+
+  accountRequestInFlight = true;
+  syncAccountUi();
+  setStatus(`Creating a game with ${opponentName}...`);
+
+  try {
+    const result = await createGame(sessionToken, opponentName);
+    hydrateClientState({ games: result.games });
+    persistSessionCookie();
+    accountInput.value = '';
+    syncAccountUi();
+    selectGame(result.game.gameId);
+  } catch (error) {
+    setStatus(errorMessage(error), 'error');
+  } finally {
+    accountRequestInFlight = false;
+    syncAccountUi();
+    updateActionButtons();
+  }
+}
+
+async function restoreAccountSession(): Promise<void> {
+  const { currentGameId, sessionToken } = getClientState();
+  if (!sessionToken) {
+    clearCurrentGameState('Enter an account name to start.');
+    return;
+  }
+
+  accountRequestInFlight = true;
+  syncAccountUi();
+  setStatus('Restoring account session...');
+
+  try {
+    const overview = await fetchAccountOverview(sessionToken);
+    const selectedGameId = applyAuthenticatedSession({
+      account: overview.account,
+      sessionToken,
+      games: overview.games,
+      preferredGameId: currentGameId,
+    });
+    if (selectedGameId) {
+      selectGame(selectedGameId);
+    } else {
+      clearCurrentGameState(
+        overview.games.length > 0 ? 'Select a game or create a new one.' : 'Create a game to start playing.',
+      );
+    }
+  } catch {
+    clearClientState();
+    clearCurrentGameState('Session expired. Sign in again.', true);
+  } finally {
+    accountRequestInFlight = false;
+    syncAccountUi();
+    updateActionButtons();
+  }
+}
+
+function applyAuthenticatedSession({
+  account,
+  sessionToken,
+  games,
+  preferredGameId,
+}: {
+  account: NonNullable<ReturnType<typeof getClientState>['account']>;
+  sessionToken: string;
+  games: GameSummary[];
+  preferredGameId: string | null;
+}): string | null {
+  const selectedGameId = chooseSelectedGameId(preferredGameId, games);
+  hydrateClientState({
+    account,
+    currentGameId: selectedGameId,
+    games,
+    sessionToken,
+  });
+  persistSessionCookie();
+  syncAccountUi();
+  return selectedGameId;
+}
+
+function chooseSelectedGameId(preferredGameId: string | null, games: GameSummary[]): string | null {
+  if (!preferredGameId) return null;
+  return games.some((game) => game.gameId === preferredGameId) ? preferredGameId : null;
+}
+
+function selectGame(gameId: string): void {
+  const { currentGameId, games } = getClientState();
+  if (!games.some((game) => game.gameId === gameId)) {
+    setStatus('That game is not in your account overview.', 'error');
+    return;
+  }
+
+  const alreadyLive = currentGameId === gameId &&
+    latestGameState !== null &&
+    gameIdFromState(latestGameState) === gameId &&
+    (socketIsOpen() || socket?.readyState === WebSocket.CONNECTING);
+  if (alreadyLive) {
+    setStatus(`Already connected to game ${shortGameId(gameId)}.`);
+    return;
+  }
+
+  waitingForServer = false;
+  hydrateClientState({ currentGameId: gameId });
+  persistSessionCookie();
+  syncAccountUi();
+  clearCurrentGameState(`Connecting to game ${shortGameId(gameId)}.`);
+  ensureGameSocket(true);
+}
+
+function signOut(): void {
+  accountRequestInFlight = false;
+  disconnectSocket();
+  clearClientState();
+  accountInput.value = '';
+  clearCurrentGameState('Signed out.', true);
+  syncAccountUi();
+}
+
+function updateStoredGameSummary(summary: GameSummary): void {
+  const { games } = getClientState();
+  const nextGames = [...games];
+  const existingIndex = nextGames.findIndex((game) => game.gameId === summary.gameId);
+  if (existingIndex === -1) {
+    nextGames.unshift(summary);
+  } else {
+    nextGames[existingIndex] = summary;
+  }
+  hydrateClientState({ games: nextGames });
+}
+
+function persistSessionCookie(): void {
+  const { account, currentGameId, playerId, sessionToken } = getClientState();
+  if (!account || !sessionToken) {
+    clearSessionCookie();
+    return;
+  }
+
+  writeSessionCookie({
+    accountId: account.id,
+    accountName: account.name,
+    currentGameId: currentGameId ?? undefined,
+    playerId: playerId ?? undefined,
+    sessionToken,
   });
 }
 
-function generateRoomId(): string {
-  return Math.random().toString(36).slice(2, 8);
-}
-
 function setStatus(message: string, tone: 'normal' | 'error' = 'normal'): void {
-  void message;
+  statusNoticeValue.textContent = message;
   if (statusScoreCard) {
     if (tone === 'error') {
       flashElement(statusScoreCard, 'status-score--shake');
@@ -1087,10 +1378,29 @@ function shortId(playerId: string | null | undefined): string {
   return playerId.slice(0, 6);
 }
 
-function syncRoomUi(roomId: string): void {
-  roomCurrentValue.textContent = roomId;
-  if (document.activeElement !== roomInput) {
-    roomInput.value = roomId;
+function historyPlayerLabel(playerId: string): string {
+  const player = latestGameState?.players.find((candidate) => candidate.id === playerId);
+  return player ? playerAccountName(player) ?? shortId(player.id) : shortId(playerId);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error && error.message.length > 0
+    ? error.message
+    : 'Something went wrong.';
+}
+
+function disconnectSocket(): void {
+  clearReconnectTimer();
+  socketGeneration += 1;
+  if (!socket) return;
+  socket.close();
+  socket = null;
+}
+
+function clearReconnectTimer(): void {
+  if (reconnectTimerId !== null) {
+    window.clearTimeout(reconnectTimerId);
+    reconnectTimerId = null;
   }
 }
 
@@ -1162,25 +1472,15 @@ function setBoardLayoutButtonState(
   button.disabled = disabled;
 }
 
-function requirePlayerId(): string | null {
-  if (!hasPlayerId()) {
-    setStatus('Waiting for a player id.');
-    return null;
-  }
-  return getPlayerId();
-}
-
 function hasPendingBoardTiles(): boolean {
   return board.tiles.some((tile) => !tile.isPlayed);
 }
 
 function submitPlayTurn(): void {
-  const playerId = requirePlayerId();
-  if (!playerId) return;
+  if (!latestGameState || !currentPlayer(latestGameState)) return;
   clearMovePreview();
   sendMessageToServer({
     type: 'play_turn',
-    playerId,
     handState: hand.getHandState(),
     boardState: board.getBoardState(),
   });
@@ -1191,93 +1491,83 @@ function requestBoardLayout(layout: BoardLayoutType): void {
     hideOptionsMenu();
     return;
   }
-  const playerId = requirePlayerId();
-  if (!playerId) return;
+  if (!currentPlayer(latestGameState)) return;
   sendMessageToServer({
     type: 'set_board_layout',
-    playerId,
     layout,
   });
   hideOptionsMenu();
 }
 
-function connectSocket(): void {
-  socket = new WebSocket(webSocketUrl());
+function ensureGameSocket(forceReconnect = false): void {
+  const target = currentSocketTarget();
+  if (!target) {
+    waitingForServer = false;
+    disconnectSocket();
+    updateActionButtons();
+    return;
+  }
+
+  if (
+    !forceReconnect &&
+    socket &&
+    socketMatchesTarget(socket, target) &&
+    (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)
+  ) {
+    return;
+  }
+
+  disconnectSocket();
+  const generation = ++socketGeneration;
+  socket = new WebSocket(webSocketUrl(target.sessionToken, target.gameId));
 
   socket.addEventListener('open', () => {
+    if (generation !== socketGeneration) return;
     reconnectAttempts = 0;
-    setStatus('Connected. Waiting for room state.');
+    setStatus(`Connected to game ${shortGameId(target.gameId)}. Waiting for game state.`);
     updateActionButtons();
   });
 
   socket.addEventListener('close', () => {
+    if (generation !== socketGeneration) return;
+    socket = null;
     waitingForServer = false;
-    setStatus('Disconnected. Reconnecting.');
     updateActionButtons();
-    scheduleReconnect();
+    if (shouldReconnectTo(target)) {
+      setStatus('Disconnected. Reconnecting.');
+      scheduleReconnect();
+    }
   });
 
   socket.addEventListener('error', () => {
+    if (generation !== socketGeneration) return;
     waitingForServer = false;
     setStatus('Connection error. Reconnecting.', 'error');
     updateActionButtons();
   });
 
   socket.addEventListener('message', (event: MessageEvent) => {
-    let msg: ServerMessage;
+    if (generation !== socketGeneration) return;
+
+    let msg: unknown;
     try {
-      msg = JSON.parse(event.data) as ServerMessage;
+      msg = JSON.parse(event.data);
     } catch {
       setStatus('Received an unreadable server message.', 'error');
       return;
     }
-    switch (msg.type) {
-      case 'player_id':
-        setPlayerId(msg.playerId);
-        syncRoomUi(msg.roomId);
-        writeSessionCookie({
-          playerId: msg.playerId,
-          roomId: msg.roomId,
-          sessionId: msg.sessionId,
-        });
-        break;
-      case 'game_state':
-        waitingForServer = false;
-        syncGameState(msg.state);
-        break;
-      case 'move_preview':
-        if (msg.requestId === latestPreviewRequestId) {
-          applyMovePreview(msg.preview);
-        }
-        break;
-      case 'removed_from_room':
-        waitingForServer = false;
-        clearJoinedRoomState(msg.roomId, msg.msg);
-        break;
-      case 'turn_rejected':
-        waitingForServer = false;
-        setStatus(msg.reason, 'error');
-        updateActionButtons();
-        if (hasPendingBoardTiles()) {
-          scheduleMovePreview();
-        }
-        break;
-      case 'error':
-        waitingForServer = false;
-        setStatus(msg.msg, 'error');
-        updateActionButtons();
-        break;
-    }
+
+    handleServerMessage(msg);
   });
 }
 
 function scheduleReconnect(): void {
+  clearReconnectTimer();
   reconnectAttempts += 1;
   const delay = Math.min(reconnectMaxDelayMs, reconnectBaseDelayMs * 2 ** (reconnectAttempts - 1));
-  window.setTimeout(() => {
-    if (!socketIsOpen()) {
-      connectSocket();
-    }
+  reconnectTimerId = window.setTimeout(() => {
+    reconnectTimerId = null;
+    ensureGameSocket(true);
   }, delay);
 }
 
@@ -1285,27 +1575,89 @@ function socketIsOpen(): boolean {
   return Boolean(socket && socket.readyState === WebSocket.OPEN);
 }
 
-function webSocketUrl(): string {
-  const configuredUrl = import.meta.env.VITE_ADJACENCY_WS_URL as string | undefined;
-  const { roomId, sessionId } = readSessionCookie();
+function webSocketUrl(sessionToken: string, gameId: string): string {
   const query = new URLSearchParams();
-  if (roomId) query.set('room', roomId);
-  if (sessionId) query.set('session', sessionId);
+  query.set('session', sessionToken);
+  query.set('game', gameId);
+  return resolveWebSocketUrl('/ws', query);
+}
 
-  if (configuredUrl) {
-    const url = new URL(configuredUrl, window.location.href);
-    query.forEach((value, key) => url.searchParams.set(key, value));
-    return url.toString();
+function currentSocketTarget(): { sessionToken: string; gameId: string } | null {
+  const { currentGameId, sessionToken } = getClientState();
+  return currentGameId && sessionToken ? { sessionToken, gameId: currentGameId } : null;
+}
+
+function socketMatchesTarget(
+  candidateSocket: WebSocket,
+  target: { sessionToken: string; gameId: string },
+): boolean {
+  const socketUrl = new URL(candidateSocket.url);
+  return socketUrl.searchParams.get('session') === target.sessionToken &&
+    socketUrl.searchParams.get('game') === target.gameId;
+}
+
+function shouldReconnectTo(target: { sessionToken: string; gameId: string }): boolean {
+  const desiredTarget = currentSocketTarget();
+  return Boolean(
+    desiredTarget &&
+    desiredTarget.sessionToken === target.sessionToken &&
+    desiredTarget.gameId === target.gameId,
+  );
+}
+
+function handleServerMessage(message: unknown): void {
+  if (!isRecord(message) || typeof message.type !== 'string') {
+    setStatus('Received a malformed server message.', 'error');
+    return;
   }
 
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const isViteDevServer = ['5173', '4173'].includes(window.location.port);
-  const baseUrl = isViteDevServer
-    ? `${protocol}//${window.location.hostname}:8080/ws`
-    : `${protocol}//${window.location.host}/ws`;
-  const url = new URL(baseUrl);
-  query.forEach((value, key) => url.searchParams.set(key, value));
-  return url.toString();
+  switch (message.type) {
+    case 'game_state': {
+      if (!('state' in message)) {
+        setStatus('Server state message was missing game data.', 'error');
+        return;
+      }
+
+      waitingForServer = false;
+      syncGameState(message.state as GameState);
+      break;
+    }
+    case 'move_preview': {
+      const requestId = readIntegerValue(message.requestId);
+      if (requestId === null) return;
+      if (requestId === latestPreviewRequestId && 'preview' in message) {
+        applyMovePreview(message.preview as MovePreviewState);
+      }
+      break;
+    }
+    case 'turn_rejected': {
+      waitingForServer = false;
+      setStatus(readStringValue(message.reason) ?? 'Turn rejected.', 'error');
+      updateActionButtons();
+      if (hasPendingBoardTiles()) {
+        scheduleMovePreview();
+      }
+      break;
+    }
+    case 'error': {
+      waitingForServer = false;
+      setStatus(readStringValue(message.msg) ?? 'The server returned an error.', 'error');
+      updateActionButtons();
+      break;
+    }
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function readStringValue(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function readIntegerValue(value: unknown): number | null {
+  return Number.isInteger(value) ? Number(value) : null;
 }
 
 function showConfirmModal(): void {
