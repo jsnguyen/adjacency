@@ -1,6 +1,6 @@
 import { LETTER_VALUES } from '../shared/letters.ts';
 import type { Letter } from '../shared/letters.ts';
-import type { PreviewCellState, PreviewWordState, TileHolderState, TileState } from '../shared/states.ts';
+import type { PreviewCellState, PreviewWordState, TileHolderState, TileState, WordBuildKind } from '../shared/states.ts';
 
 export const BOARD_COLS = 15;
 export const BOARD_ROWS = 15;
@@ -16,6 +16,7 @@ export type MoveValidationResult =
 
 type WordRun = {
   key: string;
+  kind: WordBuildKind;
   word: string;
   cells: PreviewCellState[];
   anchor: PreviewCellState;
@@ -99,7 +100,7 @@ export function validateMove(
   const connectionResult = validateConnection(committedBoard, newTiles);
   if (!connectionResult.ok) return connectionResult;
 
-  const wordRuns = collectWords(newTiles, proposedBoard, lineResult.direction);
+  const wordRuns = collectWords(newTiles, proposedBoard, committedBoard, lineResult.direction);
   if (wordRuns.length === 0) {
     return { ok: false, reason: 'Every submitted turn must form at least one word.' };
   }
@@ -118,6 +119,7 @@ export function validateMove(
     words,
     score,
     wordRuns: wordRuns.map((run) => ({
+      kind: run.kind,
       word: run.word,
       score: run.score,
       cells: run.cells,
@@ -229,6 +231,7 @@ function validateConnection(
 function collectWords(
   newTiles: LetterTileState[],
   board: Map<string, LetterTileState>,
+  committedBoard: Map<string, LetterTileState>,
   direction: 'horizontal' | 'vertical' | 'single',
 ): Array<WordRun & { score: number }> {
   const wordsByKey = new Map<string, WordRun>();
@@ -255,6 +258,7 @@ function collectWords(
 
   return [...wordsByKey.values()].map((run) => ({
     ...run,
+    kind: classifyWordRun(run, committedBoard),
     score: scoreWord(run.word),
   }));
 }
@@ -288,10 +292,40 @@ function collectWordRun(
   const key = `${startCol}:${startRow}:${endCol - deltaCol}:${endRow - deltaRow}`;
   return {
     key,
+    kind: 'fresh',
     word: letters.join(''),
     cells,
     anchor: wordAnchor(cells),
   };
+}
+
+function classifyWordRun(
+  run: Pick<WordRun, 'cells'>,
+  committedBoard: Map<string, LetterTileState>,
+): WordBuildKind {
+  let committedCellCount = 0;
+  let longestCommittedSegment = 0;
+  let currentCommittedSegment = 0;
+
+  for (const cell of run.cells) {
+    if (committedBoard.has(coordKey(cell.col, cell.row))) {
+      committedCellCount += 1;
+      currentCommittedSegment += 1;
+      if (currentCommittedSegment > longestCommittedSegment) {
+        longestCommittedSegment = currentCommittedSegment;
+      }
+    } else {
+      currentCommittedSegment = 0;
+    }
+  }
+
+  if (committedCellCount === 0) {
+    return 'fresh';
+  }
+  if (longestCommittedSegment >= 2) {
+    return 'extension';
+  }
+  return 'hook';
 }
 
 function collectNewClosedSquares(

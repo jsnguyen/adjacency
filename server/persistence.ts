@@ -27,7 +27,7 @@ export type PersistedRoomState = {
 };
 
 type PersistedStore = {
-  version: 1;
+  version: 2;
   rooms: PersistedRoomState[];
 };
 
@@ -43,7 +43,7 @@ export function loadPersistedRooms(): PersistedRoomState[] {
   try {
     const raw = readFileSync(path, 'utf8');
     const parsed = JSON.parse(raw) as PersistedStore;
-    if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.rooms)) {
+    if (!parsed || parsed.version !== 2 || !Array.isArray(parsed.rooms)) {
       console.warn(`Ignoring invalid state file at ${path}.`);
       return [];
     }
@@ -59,7 +59,7 @@ export function savePersistedRooms(rooms: PersistedRoomState[]): void {
   const path = stateFilePath();
   const tmpPath = `${path}.tmp`;
   const store: PersistedStore = {
-    version: 1,
+    version: 2,
     rooms,
   };
 

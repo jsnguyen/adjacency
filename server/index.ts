@@ -5,7 +5,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
-import { LETTER_VALUES, TILE_DISTRIBUTION } from '../shared/letters.ts';
+import { TILE_DISTRIBUTION } from '../shared/letters.ts';
 import type { Letter } from '../shared/letters.ts';
 import type { ClientMessage, ServerMessage } from '../shared/protocol.ts';
 import type {
@@ -41,6 +41,7 @@ const rooms = new Map<string, GameRoom>();
 const socketAssignments = new Map<WebSocket, { room: GameRoom; playerId: string }>();
 const heartbeatIntervalMs = 30_000;
 const sessionAssignments = new Map<string, { roomId: string; playerId: string }>();
+const ROOM_CAPACITY = 2;
 const isMainModule = process.argv[1]
   ? import.meta.url === pathToFileURL(process.argv[1]).href
   : false;
@@ -119,6 +120,10 @@ export class GameRoom {
     return this.players.size === 0;
   }
 
+  hasOpenSeat(): boolean {
+    return this.players.size < ROOM_CAPACITY;
+  }
+
   getPlayer(playerId: string): Player | undefined {
     return this.players.get(playerId);
   }
@@ -165,7 +170,7 @@ export class GameRoom {
     player.rack = player.rack.filter((tile) => !playedIds.has(tile.id));
     this.drawRack(player);
     this.teamScore += result.score;
-    const wordScores = buildWordScores(result.words);
+    const wordScores = buildWordScores(result.wordRuns);
     this.lastMove = {
       playerId,
       words: result.words,
@@ -273,8 +278,11 @@ export class GameRoom {
     return null;
   }
 
-  resetGame(playerId: string): string | null {
-    if (!this.players.has(playerId)) return 'Unknown player.';
+  resetGame(playerId: string): { ok: true; evictedPlayers: Player[] } | { ok: false; reason: string } {
+    const resetPlayer = this.players.get(playerId);
+    if (!resetPlayer) return { ok: false, reason: 'Unknown player.' };
+
+    const evictedPlayers = [...this.players.values()].filter((player) => player.id !== playerId);
 
     this.board.clear();
     this.bag = shuffle(createBag());
@@ -287,12 +295,15 @@ export class GameRoom {
       score: 0,
       message: 'Reset the game.',
     };
+    this.turnOrder = [playerId];
     this.currentTurnIndex = 0;
 
-    for (const player of this.players.values()) {
-      player.rack = [];
-      this.drawRack(player);
+    for (const evictedPlayer of evictedPlayers) {
+      this.players.delete(evictedPlayer.id);
     }
+
+    resetPlayer.rack = [];
+    this.drawRack(resetPlayer);
 
     this.recordTurn({
       playerId,
@@ -302,7 +313,7 @@ export class GameRoom {
       message: 'Reset the game.',
     });
     this.markChanged();
-    return null;
+    return { ok: true, evictedPlayers };
   }
 
   sendState(socket: WebSocket): void {
@@ -487,13 +498,18 @@ function joinRoom(socket: LiveSocket, roomId: string, requestedSessionId?: strin
     return;
   }
 
-  leaveAssignedRoom(socket);
   const reconnectPlayer = requestedSessionId
     ? reconnectExistingPlayer(socket, requestedSessionId, normalisedRoomId)
     : null;
   if (reconnectPlayer) return;
 
   const room = getRoom(normalisedRoomId);
+  if (!room.hasOpenSeat()) {
+    send(socket, { type: 'error', msg: 'Room is full. Each room supports 2 players.' });
+    return;
+  }
+
+  leaveAssignedRoom(socket);
   const sessionId = randomUUID();
   const player = room.addPlayer(socket, sessionId);
   sessionAssignments.set(sessionId, { roomId: room.id, playerId: player.id });
@@ -571,10 +587,21 @@ function handleMessage(socket: LiveSocket, msg: ClientMessage): void {
       break;
     }
     case 'reset_game': {
-      const reason = room.resetGame(msg.playerId);
-      if (reason) {
-        rejectTurn(socket, room, reason);
+      const result = room.resetGame(msg.playerId);
+      if (!result.ok) {
+        rejectTurn(socket, room, result.reason);
       } else {
+        for (const evictedPlayer of result.evictedPlayers) {
+          sessionAssignments.delete(evictedPlayer.sessionId);
+          if (evictedPlayer.socket) {
+            socketAssignments.delete(evictedPlayer.socket);
+            send(evictedPlayer.socket, {
+              type: 'removed_from_room',
+              roomId: room.id,
+              msg: 'The room was reset. Rejoin to keep playing.',
+            });
+          }
+        }
         room.broadcastState();
       }
       break;
@@ -638,15 +665,12 @@ function validateSubmittedRack(
   return null;
 }
 
-function buildWordScores(words: string[]): TurnWordScoreState[] {
+function buildWordScores(words: MovePreviewState['words']): TurnWordScoreState[] {
   return words.map((word) => ({
-    word,
-    score: scoreWord(word),
+    kind: word.kind,
+    word: word.word,
+    score: word.score,
   }));
-}
-
-function scoreWord(word: string): number {
-  return [...word].reduce((total, letter) => total + LETTER_VALUES[letter as Letter], 0);
 }
 
 function persistRooms(): void {

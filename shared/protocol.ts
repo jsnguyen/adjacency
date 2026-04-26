@@ -12,5 +12,6 @@ export type ServerMessage =
   | { type: 'player_id'; playerId: string; sessionId: string; roomId: string }
   | { type: 'game_state'; state: GameState }
   | { type: 'move_preview'; preview: MovePreviewState; requestId: number }
+  | { type: 'removed_from_room'; roomId: string; msg: string }
   | { type: 'turn_rejected'; reason: string }
   | { type: 'error'; msg: string };

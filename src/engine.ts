@@ -7,6 +7,7 @@ import type {
   TileHolderState,
   TileState,
   TurnHistoryEntryState,
+  WordBuildKind,
 } from '../shared/states.ts'
 import { Actions } from './actions.ts'
 import { Board } from './board.ts'
@@ -31,12 +32,13 @@ let statusBar: HTMLDivElement;
 let statusScoreCard: HTMLDivElement;
 let statusScoreValue: HTMLDivElement;
 let statusScoreMeta: HTMLDivElement;
+let statusScoreDelta: HTMLDivElement;
 let statusMain: HTMLDivElement;
 let statusMessage: HTMLDivElement;
-let statusStats: HTMLDivElement;
 let moveBar: HTMLDivElement;
 let roomInput: HTMLInputElement;
 let roomCurrentValue: HTMLSpanElement;
+let roomPlayers: HTMLDivElement;
 let historySummary: HTMLSpanElement;
 let historyList: HTMLDivElement;
 let previewLayer: HTMLDivElement;
@@ -50,6 +52,8 @@ let selectedExchangeIds = new Set<string>();
 let resetModal: HTMLDivElement;
 let previewTimerId: number | null = null;
 let latestPreviewRequestId = 0;
+let scoreAnimationFrameId: number | null = null;
+let scoreFeedbackTimerId: number | null = null;
 
 connectSocket();
 
@@ -78,10 +82,11 @@ function sendTurnToServer(handState: TileHolderState, boardState: TileHolderStat
   });
 }
 
-const app = document.getElementById('app')
-if (!app) {
+const appRoot = document.getElementById('app');
+if (!appRoot) {
   throw new Error('Missing #app');
 }
+const app = appRoot as HTMLDivElement;
 app.style.width = `min(calc(100vw - 28px), ${APP_SHELL_WIDTH})`;
 
 const headerContainer = document.querySelector('.container') as HTMLDivElement | null;
@@ -101,8 +106,10 @@ roomCurrentValue.classList.add('room-bar__current');
 roomCurrentValue.textContent = readSessionCookie().roomId ?? 'main';
 const roomHint = document.createElement('span');
 roomHint.classList.add('room-bar__hint');
-roomHint.textContent = 'Saved automatically on the server';
-roomMeta.append(roomLabel, roomCurrentValue, roomHint);
+roomHint.textContent = '2-player room';
+roomPlayers = document.createElement('div');
+roomPlayers.classList.add('room-bar__players');
+roomMeta.append(roomLabel, roomCurrentValue, roomHint, roomPlayers);
 const roomControls = document.createElement('div');
 roomControls.classList.add('room-bar__controls');
 roomInput = document.createElement('input');
@@ -121,7 +128,12 @@ const roomNewButton = document.createElement('button');
 roomNewButton.classList.add('room-button', 'room-button--secondary');
 roomNewButton.type = 'button';
 roomNewButton.textContent = 'New room';
-roomControls.append(roomInput, roomJoinButton, roomNewButton);
+resetButton = document.createElement('button');
+resetButton.classList.add('room-button', 'room-button--reset');
+resetButton.id = 'reset-button';
+resetButton.type = 'button';
+resetButton.textContent = 'Reset';
+roomControls.append(roomInput, roomJoinButton, roomNewButton, resetButton);
 roomBar.append(roomMeta, roomControls);
 app.appendChild(roomBar);
 
@@ -138,16 +150,17 @@ statusScoreValue.textContent = '0';
 statusScoreMeta = document.createElement('div');
 statusScoreMeta.classList.add('status-score__meta');
 statusScoreMeta.textContent = '0 tiles left in bag';
-statusScoreCard.append(statusScoreLabel, statusScoreValue, statusScoreMeta);
+statusScoreDelta = document.createElement('div');
+statusScoreDelta.classList.add('status-score__delta');
+statusScoreDelta.setAttribute('aria-hidden', 'true');
+statusScoreCard.append(statusScoreLabel, statusScoreValue, statusScoreMeta, statusScoreDelta);
 statusMain = document.createElement('div');
 statusMain.classList.add('status-main');
 statusMessage = document.createElement('div');
 statusMessage.classList.add('status-message');
 statusMessage.textContent = 'Connecting to multiplayer server.';
-statusStats = document.createElement('div');
-statusStats.classList.add('status-stats');
-statusMain.append(statusMessage, statusStats);
-statusBar.append(statusScoreCard, statusMain);
+statusMain.append(statusMessage);
+statusBar.append(statusMain, statusScoreCard);
 app.appendChild(statusBar);
 
 moveBar = document.createElement('div');
@@ -198,11 +211,22 @@ let hand = new Hand(bottomBar);
 const buttonLabels = ['recall', 'shuffle', 'exchange', 'pass', 'play'];
 new Actions(bottomBar, buttonLabels);
 
-resetButton = document.createElement('button');
-resetButton.classList.add('action-button', 'action-button--reset');
-resetButton.id = 'reset-button';
-resetButton.textContent = 'reset';
-document.querySelector('.actions')?.appendChild(resetButton);
+function syncHistoryPanelHeight(): void {
+  const boardAreaHeight = Math.ceil(boardArea.getBoundingClientRect().height);
+  if (boardAreaHeight > 0) {
+    historyPanel.style.setProperty('--history-panel-max-height', `${boardAreaHeight}px`);
+  }
+}
+
+if ('ResizeObserver' in window) {
+  const historyPanelHeightObserver = new ResizeObserver(() => {
+    syncHistoryPanelHeight();
+  });
+  historyPanelHeightObserver.observe(boardArea);
+}
+
+window.addEventListener('resize', syncHistoryPanelHeight);
+window.requestAnimationFrame(syncHistoryPanelHeight);
 
 resetModal = document.createElement('div');
 resetModal.classList.add('modal-backdrop');
@@ -210,7 +234,7 @@ resetModal.hidden = true;
 resetModal.innerHTML = `
   <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="reset-title">
     <h2 id="reset-title">Reset game?</h2>
-    <p>This clears the board, reshuffles the bag, and redeals every rack in the room.</p>
+    <p>This clears the board, keeps you in the room, and removes the other player until they rejoin.</p>
     <div class="modal-actions">
       <button type="button" id="reset-cancel-button" class="action-button action-button--secondary">cancel</button>
       <button type="button" id="reset-confirm-button" class="action-button action-button--reset">reset</button>
@@ -222,17 +246,17 @@ document.body.appendChild(resetModal);
 shuffleButton = document.getElementById('shuffle-button') as HTMLButtonElement | null;
 if (shuffleButton) {
   shuffleButton.addEventListener('click', () => {
+    clearMovePreview();
     board.recallHand(hand);
     hand.shuffleHand();
-    scheduleMovePreview();
   });
 }
 
 recallButton = document.getElementById('recall-button') as HTMLButtonElement | null;
 if (recallButton) {
   recallButton.addEventListener('click', () => {
+    clearMovePreview();
     board.recallHand(hand);
-    scheduleMovePreview();
   })
 }
 
@@ -359,9 +383,11 @@ board.el.appendChild(previewLayer);
 
 updateActionButtons();
 renderTurnHistory([]);
+renderRoomPlayers(null, null);
 
 function syncGameState(state: GameState): void {
   clearMovePreview();
+  const previousState = latestGameState;
   latestGameState = state;
   writeSessionCookie({ roomId: state.roomId });
   roomCurrentValue.textContent = state.roomId;
@@ -395,7 +421,37 @@ function syncGameState(state: GameState): void {
     }
   }
 
-  updateStatusFromState(state, player);
+  updateStatusFromState(state, player, previousState);
+  renderRoomPlayers(state, player);
+  updateActionButtons();
+}
+
+function clearJoinedRoomState(roomId: string, message: string): void {
+  hideResetModal();
+  clearMovePreview();
+  stopScoreAnimation();
+  hideScoreGain();
+  latestGameState = null;
+  selectedExchangeIds = new Set();
+  clearPlayerId();
+  app.classList.remove('app--waiting-turn');
+  writeSessionCookie({
+    roomId,
+    playerId: undefined,
+    sessionId: undefined,
+  });
+  roomCurrentValue.textContent = roomId;
+  if (document.activeElement !== roomInput) {
+    roomInput.value = roomId;
+  }
+  board.clearTiles();
+  hand.clearTiles();
+  renderRoomPlayers(null, null);
+  renderTurnHistory([]);
+  statusScoreValue.textContent = '0';
+  statusScoreMeta.textContent = 'Rejoin to keep playing';
+  moveBar.textContent = '';
+  setStatus(message);
   updateActionButtons();
 }
 
@@ -414,33 +470,129 @@ function currentPlayer(state: GameState): PlayerPublicState | null {
   return state.players.find((player) => player.id === playerId) ?? null;
 }
 
-function updateStatusFromState(state: GameState, player: PlayerPublicState | null): void {
+function updateStatusFromState(
+  state: GameState,
+  player: PlayerPublicState | null,
+  previousState: GameState | null,
+): void {
   const isMyTurn = state.currentPlayerId === player?.id;
-  const currentTurn = isMyTurn ? 'your turn' : shortId(state.currentPlayerId);
-  const playerCount = state.players.length === 1 ? '1 player' : `${state.players.length} players`;
-  const dictionary = dictionaryLabel(state);
-  statusScoreValue.textContent = state.teamScore.toString();
+  const partner = player ? state.players.find((candidate) => candidate.id !== player.id) ?? null : null;
+  syncScoreFeedback(previousState, state);
   const bagLabel = `${state.remainingTiles} tile${state.remainingTiles === 1 ? '' : 's'} left in bag`;
   statusScoreMeta.textContent = state.lastMove?.score
     ? `+${state.lastMove.score} last turn / ${bagLabel}`
     : bagLabel;
-  renderStats([
-    ['Players', playerCount],
-    ['Turn', currentTurn],
-    ['Words', dictionary],
-  ]);
-  setStatus(isMyTurn ? 'Your turn.' : `Waiting on ${currentTurn}.`);
+  app.classList.toggle('app--waiting-turn', !isMyTurn);
+  statusMessage.classList.toggle('status-message--active', isMyTurn);
+  statusMessage.classList.toggle('status-message--waiting', !isMyTurn);
+  if (!player) {
+    setStatus('Waiting for your seat.');
+  } else if (!partner) {
+    setStatus(isMyTurn ? 'Your turn. Partner seat open.' : 'Partner seat open.');
+  } else if (isMyTurn) {
+    setStatus('Your turn.');
+  } else {
+    setStatus('Partner turn.');
+  }
   restoreMoveBar();
   renderTurnHistory(state.turnHistory);
+}
+
+function syncScoreFeedback(previousState: GameState | null, state: GameState): void {
+  const sameRoom = previousState?.roomId === state.roomId;
+  const previousScore = sameRoom ? previousState.teamScore : null;
+  const scoreGain = previousScore === null ? 0 : state.teamScore - previousScore;
+
+  if (scoreGain > 0) {
+    animateScoreValue(previousScore ?? state.teamScore, state.teamScore);
+    showScoreGain(scoreGain);
+    return;
+  }
+
+  stopScoreAnimation();
+  hideScoreGain();
+  statusScoreValue.textContent = state.teamScore.toString();
+}
+
+function animateScoreValue(fromScore: number, toScore: number): void {
+  stopScoreAnimation();
+
+  const prefersReducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+  if (prefersReducedMotion || fromScore >= toScore) {
+    statusScoreValue.textContent = toScore.toString();
+    return;
+  }
+
+  const startTime = performance.now();
+  const durationMs = Math.min(720, Math.max(320, (toScore - fromScore) * 45));
+
+  const tick = (now: number) => {
+    const elapsed = now - startTime;
+    const progress = Math.min(1, elapsed / durationMs);
+    const eased = 1 - (1 - progress) ** 3;
+    const currentScore = Math.round(fromScore + (toScore - fromScore) * eased);
+    statusScoreValue.textContent = currentScore.toString();
+    if (progress < 1) {
+      scoreAnimationFrameId = window.requestAnimationFrame(tick);
+      return;
+    }
+
+    scoreAnimationFrameId = null;
+    statusScoreValue.textContent = toScore.toString();
+  };
+
+  scoreAnimationFrameId = window.requestAnimationFrame(tick);
+}
+
+function stopScoreAnimation(): void {
+  if (scoreAnimationFrameId !== null) {
+    window.cancelAnimationFrame(scoreAnimationFrameId);
+    scoreAnimationFrameId = null;
+  }
+}
+
+function showScoreGain(scoreGain: number): void {
+  if (scoreFeedbackTimerId !== null) {
+    window.clearTimeout(scoreFeedbackTimerId);
+    scoreFeedbackTimerId = null;
+  }
+
+  statusScoreDelta.textContent = `+${scoreGain}`;
+  statusScoreCard.classList.remove('status-score--pulse');
+  statusScoreDelta.classList.remove('status-score__delta--visible');
+  void statusScoreCard.offsetWidth;
+  statusScoreCard.classList.add('status-score--pulse');
+  statusScoreDelta.classList.add('status-score__delta--visible');
+
+  scoreFeedbackTimerId = window.setTimeout(() => {
+    statusScoreCard.classList.remove('status-score--pulse');
+    statusScoreDelta.classList.remove('status-score__delta--visible');
+    scoreFeedbackTimerId = null;
+  }, 1100);
+}
+
+function hideScoreGain(): void {
+  if (scoreFeedbackTimerId !== null) {
+    window.clearTimeout(scoreFeedbackTimerId);
+    scoreFeedbackTimerId = null;
+  }
+  statusScoreCard.classList.remove('status-score--pulse');
+  statusScoreDelta.classList.remove('status-score__delta--visible');
+  statusScoreDelta.textContent = '';
 }
 
 function updateActionButtons(): void {
   const player = latestGameState ? currentPlayer(latestGameState) : null;
   const isMyTurn = Boolean(player && latestGameState?.currentPlayerId === player.id);
   const baseDisabled = waitingForServer || !isMyTurn || !socketIsOpen();
+  const resetDisabled = waitingForServer || !player || !socketIsOpen();
 
-  for (const button of [playButton, passButton, shuffleButton, recallButton, resetButton]) {
+  for (const button of [playButton, passButton, shuffleButton, recallButton]) {
     if (button) button.disabled = baseDisabled;
+  }
+
+  if (resetButton) {
+    resetButton.disabled = resetDisabled;
   }
 
   if (exchangeButton) {
@@ -548,13 +700,13 @@ function applyMovePreview(preview: MovePreviewState): void {
     const badgeIndex = anchorBadgeCounts.get(anchorKey) ?? 0;
     anchorBadgeCounts.set(anchorKey, badgeIndex + 1);
     const coords = gridCoordsToTileHolderCoords(word.anchor.col, word.anchor.row, board);
-    badge.style.left = `${coords.x + TILE_SIZE + 4}px`;
-    badge.style.top = `${coords.y + TILE_SIZE + 4 - badgeIndex * 24}px`;
+    badge.style.left = `${coords.x + TILE_SIZE - 2}px`;
+    badge.style.top = `${coords.y + TILE_SIZE - 2 - badgeIndex * 18}px`;
     return badge;
   });
 
   previewLayer.replaceChildren(...badges);
-  moveBar.textContent = `Preview: ${preview.words.map((word) => `${word.word} (${word.score})`).join(' + ')} = ${preview.totalScore} pts`;
+  moveBar.textContent = `Preview: ${preview.words.map((word) => `${word.word} (${word.score}, ${wordKindLabel(word.kind)})`).join(' + ')} = ${preview.totalScore} pts`;
 }
 
 function clearMovePreview(): void {
@@ -569,9 +721,9 @@ function clearMovePreview(): void {
 
 function clearMovePreviewMarks(): void {
   previewLayer.replaceChildren();
-  for (const tile of board.tiles) {
-    tile.el.classList.remove('preview-valid');
-  }
+  document.querySelectorAll('.preview-valid').forEach((tile) => {
+    tile.classList.remove('preview-valid');
+  });
 }
 
 function restoreMoveBar(): void {
@@ -587,19 +739,50 @@ function restoreMoveBar(): void {
   }
 }
 
-function renderStats(entries: [string, string][]): void {
-  const chips = entries.map(([label, value]) => {
+function renderRoomPlayers(state: GameState | null, player: PlayerPublicState | null): void {
+  const partner = player && state
+    ? state.players.find((candidate) => candidate.id !== player.id) ?? null
+    : null;
+
+  const slots: Array<{ label: string; player: PlayerPublicState | null }> = player
+    ? [
+      { label: 'You', player },
+      { label: 'Partner', player: partner },
+    ]
+    : [
+      { label: 'Seat 1', player: state?.players[0] ?? null },
+      { label: 'Seat 2', player: state?.players[1] ?? null },
+    ];
+
+  const slotEls = slots.map((slot) => {
     const chip = document.createElement('div');
-    chip.classList.add('status-chip');
-    const labelEl = document.createElement('span');
-    labelEl.classList.add('status-chip__label');
-    labelEl.textContent = label;
-    const valueEl = document.createElement('strong');
-    valueEl.textContent = value;
-    chip.append(labelEl, valueEl);
+    chip.classList.add('room-player');
+
+    const label = document.createElement('span');
+    label.classList.add('room-player__label');
+    label.textContent = slot.label;
+
+    const value = document.createElement('strong');
+    value.classList.add('room-player__value');
+
+    const stateText = document.createElement('span');
+    stateText.classList.add('room-player__state');
+
+    if (slot.player) {
+      chip.classList.toggle('room-player--self', slot.player.id === player?.id);
+      value.textContent = shortId(slot.player.id);
+      stateText.textContent = slot.player.connected ? 'connected' : 'away';
+    } else {
+      chip.classList.add('room-player--empty');
+      value.textContent = 'open';
+      stateText.textContent = 'waiting';
+    }
+
+    chip.append(label, value, stateText);
     return chip;
   });
-  statusStats.replaceChildren(...chips);
+
+  roomPlayers.replaceChildren(...slotEls);
 }
 
 function renderTurnHistory(entries: TurnHistoryEntryState[]): void {
@@ -641,15 +824,23 @@ function renderTurnHistory(entries: TurnHistoryEntryState[]): void {
         const row = document.createElement('div');
         row.classList.add('history-entry__word');
 
+        const wordMeta = document.createElement('div');
+        wordMeta.classList.add('history-entry__word-meta');
+
         const word = document.createElement('span');
         word.classList.add('history-entry__word-label');
         word.textContent = wordScore.word;
+
+        const kind = document.createElement('span');
+        kind.classList.add('history-entry__word-kind', `history-entry__word-kind--${wordScore.kind}`);
+        kind.textContent = wordKindLabel(wordScore.kind);
 
         const score = document.createElement('span');
         score.classList.add('history-entry__word-score');
         score.textContent = `${wordScore.score} pt${wordScore.score === 1 ? '' : 's'}`;
 
-        row.append(word, score);
+        wordMeta.append(word, kind);
+        row.append(wordMeta, score);
         wordRows.appendChild(row);
       }
 
@@ -667,11 +858,15 @@ function renderTurnHistory(entries: TurnHistoryEntryState[]): void {
   historyList.replaceChildren(...entryCards);
 }
 
-function dictionaryLabel(state: GameState): string {
-  if (state.rules.dictionary === 'permissive') return 'permissive';
-  if (state.rules.dictionary === 'system') return `${state.rules.dictionaryWordCount.toLocaleString()} system`;
-  if (state.rules.dictionary === 'inline') return `${state.rules.dictionaryWordCount.toLocaleString()} inline`;
-  return `${state.rules.dictionaryWordCount.toLocaleString()} file`;
+function wordKindLabel(kind: WordBuildKind): string {
+  switch (kind) {
+    case 'extension':
+      return 'extend';
+    case 'hook':
+      return 'hook';
+    case 'fresh':
+      return 'fresh';
+  }
 }
 
 function requestRoomJoin(candidateRoomId: string): void {
@@ -774,6 +969,10 @@ function connectSocket(): void {
         if (msg.requestId === latestPreviewRequestId) {
           applyMovePreview(msg.preview);
         }
+        break;
+      case 'removed_from_room':
+        waitingForServer = false;
+        clearJoinedRoomState(msg.roomId, msg.msg);
         break;
       case 'turn_rejected':
         waitingForServer = false;

@@ -34,6 +34,8 @@ export class Hand {
       tile.tileHolder = this;
       tile.handCol = tile.col;
       tile.handRow = tile.row;
+      tile.el.classList.remove('preview-valid');
+      tile.el.classList.remove('selected-tile');
       tile.el.classList.add('rack-tile');
       this.tiles.push(tile);
       this.el.appendChild(tile.el);

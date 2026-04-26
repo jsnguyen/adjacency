@@ -44,6 +44,7 @@ const firstMove = validateMove(
 expectOk(firstMove);
 assert.deepEqual(firstMove.words, ['CAT']);
 assert.equal(firstMove.score, 5);
+assert.equal(firstMove.wordRuns[0].kind, 'fresh');
 assert.equal(firstMove.wordRuns[0].score, 5);
 assert.deepEqual(firstMove.wordRuns[0].cells, [
   { col: 7, row: 7 },
@@ -101,6 +102,7 @@ const pluralMove = validateMove(
 );
 expectOk(pluralMove);
 assert.deepEqual(pluralMove.words, ['CATS']);
+assert.equal(pluralMove.wordRuns[0].kind, 'extension');
 
 const inferredPluralMove = validateMove(
   committedBoard([
@@ -164,6 +166,10 @@ const pluralHookMove = validateMove(
 );
 expectOk(pluralHookMove);
 assert.deepEqual(pluralHookMove.words, ['CATS', 'ASK']);
+assert.deepEqual(
+  pluralHookMove.wordRuns.map((run) => [run.word, run.kind]),
+  [['CATS', 'extension'], ['ASK', 'hook']],
+);
 
 const multipleWordMove = validateMove(
   committedBoard([
@@ -184,6 +190,10 @@ const multipleWordMove = validateMove(
 );
 expectOk(multipleWordMove);
 assert.deepEqual(multipleWordMove.words, ['CATS', 'AS']);
+assert.deepEqual(
+  multipleWordMove.wordRuns.map((run) => [run.word, run.kind]),
+  [['CATS', 'extension'], ['AS', 'hook']],
+);
 
 const invalidCrossWordMove = validateMove(
   committedBoard([

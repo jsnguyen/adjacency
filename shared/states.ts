@@ -31,7 +31,10 @@ export type LastMoveState = {
   message: string;
 } | null;
 
+export type WordBuildKind = 'fresh' | 'hook' | 'extension';
+
 export type TurnWordScoreState = {
+  kind: WordBuildKind;
   word: string;
   score: number;
 };
@@ -42,6 +45,7 @@ export type PreviewCellState = {
 };
 
 export type PreviewWordState = {
+  kind: WordBuildKind;
   word: string;
   score: number;
   cells: PreviewCellState[];

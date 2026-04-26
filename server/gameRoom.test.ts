@@ -16,6 +16,8 @@ const room = new GameRoom('bag-test');
 const firstPlayer = room.addPlayer(null, 'session-1');
 const secondPlayer = room.addPlayer(null, 'session-2');
 
+assert.equal(room.hasOpenSeat(), false);
+
 let state = room.snapshot();
 assert.equal(state.players.length, 2);
 assert.equal(state.remainingTiles, totalTiles - 14);
@@ -36,5 +38,19 @@ const firstRackAfter = state.players.find((player) => player.id === firstPlayer.
 assert.equal(firstRackAfter.length, 7);
 assert.equal(new Set(firstRackAfter.map((tile) => tile.id)).size, 7);
 assert.equal(firstRackAfter.some((tile) => exchangeIds.includes(tile.id)), false);
+
+const resetResult = room.resetGame(firstPlayer.id);
+assert.equal(resetResult.ok, true);
+if (resetResult.ok) {
+  assert.equal(resetResult.evictedPlayers.length, 1);
+  assert.equal(resetResult.evictedPlayers[0]?.id, secondPlayer.id);
+}
+
+state = room.snapshot();
+assert.equal(state.players.length, 1);
+assert.equal(state.players[0]?.id, firstPlayer.id);
+assert.equal(state.currentPlayerId, firstPlayer.id);
+assert.equal(state.teamScore, 0);
+assert.equal(state.turnHistory[0]?.kind, 'reset');
 
 console.log('Game room tests passed.');

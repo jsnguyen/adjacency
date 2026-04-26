@@ -31,7 +31,9 @@ export class Board {
 
   addTile(tile : Tile) {
     if (!this.spaceIsEmpty(tile)) return false;
+    tile.el.classList.remove('preview-valid');
     tile.el.classList.remove('selected-tile');
+    tile.el.classList.remove('rack-tile');
     tile.tileHolder = this;
     this.tiles.push(tile);
     this.el.appendChild(tile.el);
