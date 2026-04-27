@@ -1,67 +1,67 @@
-import type { AccountSummary, GameSummary } from './accountModels.ts';
+import type { StoredClaim } from './claimStore.ts';
 
 type ClientState = {
-  account: AccountSummary | null;
   currentGameId: string | null;
-  games: GameSummary[];
-  playerId: string | null;
-  sessionToken: string | null;
+  currentPlayerId: string | null;
+  currentClaimToken: string | null;
+  defaultPlayerName: string;
+  claims: StoredClaim[];
 };
 
 const clientState: ClientState = {
-  account: null,
   currentGameId: null,
-  games: [],
-  playerId: null,
-  sessionToken: null,
+  currentPlayerId: null,
+  currentClaimToken: null,
+  defaultPlayerName: '',
+  claims: [],
 };
 
 export function hydrateClientState(partialState: Partial<ClientState>): void {
-  if (partialState.account !== undefined) {
-    clientState.account = partialState.account;
-  }
   if (partialState.currentGameId !== undefined) {
     clientState.currentGameId = partialState.currentGameId;
   }
-  if (partialState.games !== undefined) {
-    clientState.games = partialState.games;
+  if (partialState.currentPlayerId !== undefined) {
+    clientState.currentPlayerId = partialState.currentPlayerId;
   }
-  if (partialState.playerId !== undefined) {
-    clientState.playerId = partialState.playerId;
+  if (partialState.currentClaimToken !== undefined) {
+    clientState.currentClaimToken = partialState.currentClaimToken;
   }
-  if (partialState.sessionToken !== undefined) {
-    clientState.sessionToken = partialState.sessionToken;
+  if (partialState.defaultPlayerName !== undefined) {
+    clientState.defaultPlayerName = partialState.defaultPlayerName;
+  }
+  if (partialState.claims !== undefined) {
+    clientState.claims = partialState.claims;
   }
 }
 
 export function clearClientState(): void {
-  clientState.account = null;
   clientState.currentGameId = null;
-  clientState.games = [];
-  clientState.playerId = null;
-  clientState.sessionToken = null;
+  clientState.currentPlayerId = null;
+  clientState.currentClaimToken = null;
+  clientState.defaultPlayerName = '';
+  clientState.claims = [];
 }
 
 export function getClientState(): Readonly<ClientState> {
   return clientState;
 }
 
-export function setPlayerId(nextPlayerId: string): void {
-  clientState.playerId = nextPlayerId;
+export function setCurrentPlayerId(nextPlayerId: string): void {
+  clientState.currentPlayerId = nextPlayerId;
 }
 
-export function clearPlayerId(): void {
-  clientState.playerId = null;
+export function clearCurrentPlayerId(): void {
+  clientState.currentPlayerId = null;
 }
 
-export function getPlayerId(): string {
-  if (clientState.playerId === null) {
-    throw new Error('playerId is not set yet');
+export function hasCurrentPlayerId(): boolean {
+  return clientState.currentPlayerId !== null;
+}
+
+export function getCurrentPlayerId(): string {
+  if (clientState.currentPlayerId === null) {
+    throw new Error('currentPlayerId is not set yet');
   }
 
-  return clientState.playerId;
-}
-
-export function hasPlayerId(): boolean {
-  return clientState.playerId !== null;
+  return clientState.currentPlayerId;
 }

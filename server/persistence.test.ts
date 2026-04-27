@@ -1,13 +1,12 @@
 import assert from 'node:assert/strict';
 import { GameRoom } from './index.ts';
-import { loadPersistedGames, loginAccount, savePersistedGames } from './database.ts';
-
-const { account: accountA } = loginAccount('Persist Alpha');
-const { account: accountB } = loginAccount('Persist Beta');
+import { loadPersistedGames, savePersistedGames } from './database.ts';
 
 const room = new GameRoom('persist-test');
-room.addPlayer(accountA, 0, null);
-room.addPlayer(accountB, 1, null);
+const firstPlayer = room.claimSeat('Persist Alpha', 1, 'claim-alpha', null);
+const secondPlayer = room.claimSeat('Persist Beta', 2, 'claim-beta', null);
+assert.ok(firstPlayer);
+assert.ok(secondPlayer);
 
 savePersistedGames([room.toPersistedState()]);
 const persistedGames = loadPersistedGames();
@@ -17,10 +16,10 @@ const restored = GameRoom.fromPersistedState(persistedGames[0]);
 const snapshot = restored.snapshot();
 assert.equal(snapshot.gameId, 'persist-test');
 assert.equal(snapshot.players.length, 2);
-assert.equal(snapshot.players[0]?.accountName, 'Persist Alpha');
-assert.equal(snapshot.players[1]?.accountName, 'Persist Beta');
+assert.equal(snapshot.players[0]?.name, 'Persist Alpha');
+assert.equal(snapshot.players[1]?.name, 'Persist Beta');
 assert.equal(snapshot.players[0]?.rack.tiles.length, 7);
-assert.equal(restored.assignments()[0]?.accountId, accountA.id);
-assert.equal(restored.assignments()[1]?.accountId, accountB.id);
+assert.equal(restored.getPlayerByClaimToken('claim-alpha')?.id, firstPlayer.id);
+assert.equal(restored.getPlayerByClaimToken('claim-beta')?.id, secondPlayer.id);
 
 console.log('Persistence tests passed.');

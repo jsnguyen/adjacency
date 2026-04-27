@@ -10,7 +10,6 @@ import type { Letter } from '../shared/letters.ts';
 import { isBoardLayoutType, type BoardLayoutType } from '../shared/boardBonuses.ts';
 import type { ClientMessage, ServerMessage } from '../shared/protocol.ts';
 import type {
-  AccountState,
   GameState,
   GameSummaryState,
   LastMoveState,
@@ -31,10 +30,7 @@ import {
 } from './rules.ts';
 import type { LetterTileState } from './rules.ts';
 import {
-  accountByName,
-  accountBySession,
   loadPersistedGames,
-  loginAccount,
   savePersistedGames,
   type PersistedGameState,
 } from './database.ts';
@@ -46,7 +42,7 @@ const dictionary = loadDictionary();
 const server = createServer(handleHttpRequest);
 const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
 const rooms = new Map<string, GameRoom>();
-const socketAssignments = new Map<WebSocket, { room: GameRoom; playerId: string; accountId: string }>();
+const socketAssignments = new Map<WebSocket, { room: GameRoom; playerId: string }>();
 const heartbeatIntervalMs = 30_000;
 const isMainModule = process.argv[1]
   ? import.meta.url === pathToFileURL(process.argv[1]).href
@@ -54,8 +50,8 @@ const isMainModule = process.argv[1]
 
 type Player = {
   id: string;
-  accountId: string;
-  accountName: string;
+  claimToken: string;
+  name: string;
   seat: number;
   socket: LiveSocket | null;
   rack: LetterTileState[];
@@ -91,12 +87,20 @@ export class GameRoom {
     this.bag = shuffle(createBag());
   }
 
-  addPlayer(account: AccountState, seat: number, socket: LiveSocket | null = null): Player {
+  claimSeat(
+    name: string,
+    seat: number | null = null,
+    claimToken: string = randomUUID(),
+    socket: LiveSocket | null = null,
+  ): Player | null {
+    const nextSeat = seat ?? this.firstOpenSeat();
+    if (nextSeat === null || this.playerForSeat(nextSeat)) return null;
+
     const player: Player = {
       id: randomUUID(),
-      accountId: account.id,
-      accountName: account.name,
-      seat,
+      claimToken,
+      name,
+      seat: nextSeat,
       socket,
       rack: [],
       connected: socket !== null,
@@ -108,53 +112,50 @@ export class GameRoom {
     return player;
   }
 
-  removePlayer(playerId: string): void {
-    const player = this.players.get(playerId);
-    if (!player) return;
-
-    this.returnRackToBag(player);
-    this.players.delete(playerId);
-
-    const removedIndex = this.turnOrder.indexOf(playerId);
-    if (removedIndex >= 0) {
-      this.turnOrder.splice(removedIndex, 1);
-      if (this.turnOrder.length === 0) {
-        this.currentTurnIndex = 0;
-      } else if (removedIndex < this.currentTurnIndex) {
-        this.currentTurnIndex -= 1;
-      } else if (removedIndex === this.currentTurnIndex) {
-        this.currentTurnIndex %= this.turnOrder.length;
-      }
-    }
-
-    this.broadcastState();
-    this.markChanged();
-  }
-
-  isEmpty(): boolean {
-    return this.players.size === 0;
-  }
-
   getPlayer(playerId: string): Player | undefined {
     return this.players.get(playerId);
   }
 
-  getPlayerByAccountId(accountId: string): Player | undefined {
-    return [...this.players.values()].find((player) => player.accountId === accountId);
+  getPlayerByClaimToken(claimToken: string): Player | undefined {
+    return [...this.players.values()].find((player) => player.claimToken === claimToken);
   }
 
-  reconnectAccount(accountId: string, socket: LiveSocket): Player | null {
-    const player = this.getPlayerByAccountId(accountId);
+  reconnectClaim(claimToken: string, socket: LiveSocket): Player | null {
+    const player = this.getPlayerByClaimToken(claimToken);
     if (!player) return null;
 
     if (player.socket && player.socket !== socket) {
       socketAssignments.delete(player.socket);
-      player.socket.close(1000, 'Session resumed in a new tab.');
+      player.socket.close(1000, 'Claim resumed in a new tab.');
     }
 
     player.socket = socket;
     player.connected = true;
     return player;
+  }
+
+  updatePlayerName(playerId: string, name: string): string | null {
+    const player = this.players.get(playerId);
+    if (!player) return 'Unknown player.';
+    if (player.name === name) return null;
+    player.name = name;
+    this.markChanged();
+    return null;
+  }
+
+  hasOpenSeat(): boolean {
+    return this.players.size < 2;
+  }
+
+  private playerForSeat(seat: number): Player | undefined {
+    return [...this.players.values()].find((player) => player.seat === seat);
+  }
+
+  private firstOpenSeat(): number | null {
+    for (const seat of [1, 2]) {
+      if (!this.playerForSeat(seat)) return seat;
+    }
+    return null;
   }
 
   disconnectPlayer(playerId: string): Player | null {
@@ -171,6 +172,7 @@ export class GameRoom {
     const player = this.players.get(playerId);
     if (!player) return 'Unknown player.';
     if (this.gameEnded) return 'Game is over.';
+    if (this.players.size < 2) return 'Waiting for another player to claim the open seat.';
     if (this.currentPlayerId() !== playerId) return 'It is not your turn.';
 
     const result = validateMove(this.board, player.rack, boardState, dictionary.words, this.boardLayout);
@@ -189,14 +191,14 @@ export class GameRoom {
     const wordScores = buildWordScores(result.wordRuns);
     this.lastMove = {
       playerId,
-      playerName: player.accountName,
+      playerName: player.name,
       words: result.words,
       score: result.score,
       message: `Played ${result.words.join(', ')} for ${result.score} points.`,
     };
     this.recordTurn({
       playerId,
-      playerName: player.accountName,
+      playerName: player.name,
       kind: 'play',
       words: wordScores,
       totalScore: result.score,
@@ -214,6 +216,9 @@ export class GameRoom {
     }
     if (this.gameEnded) {
       return { valid: false, words: [], totalScore: 0, reason: 'Game is over.' };
+    }
+    if (this.players.size < 2) {
+      return { valid: false, words: [], totalScore: 0, reason: 'Waiting for another player to claim the open seat.' };
     }
     if (this.currentPlayerId() !== playerId) {
       return { valid: false, words: [], totalScore: 0, reason: 'It is not your turn.' };
@@ -247,18 +252,19 @@ export class GameRoom {
   passTurn(playerId: string): string | null {
     if (!this.players.has(playerId)) return 'Unknown player.';
     if (this.gameEnded) return 'Game is over.';
+    if (this.players.size < 2) return 'Waiting for another player to claim the open seat.';
     if (this.currentPlayerId() !== playerId) return 'It is not your turn.';
 
     this.lastMove = {
       playerId,
-      playerName: this.players.get(playerId)?.accountName ?? 'Unknown',
+      playerName: this.players.get(playerId)?.name ?? 'Unknown',
       words: [],
       score: 0,
       message: 'Passed.',
     };
     this.recordTurn({
       playerId,
-      playerName: this.players.get(playerId)?.accountName ?? 'Unknown',
+      playerName: this.players.get(playerId)?.name ?? 'Unknown',
       kind: 'pass',
       words: [],
       totalScore: 0,
@@ -273,6 +279,7 @@ export class GameRoom {
     const player = this.players.get(playerId);
     if (!player) return 'Unknown player.';
     if (this.gameEnded) return 'Game is over.';
+    if (this.players.size < 2) return 'Waiting for another player to claim the open seat.';
     if (this.currentPlayerId() !== playerId) return 'It is not your turn.';
 
     const uniqueTileIds = [...new Set(tileIds)];
@@ -293,14 +300,14 @@ export class GameRoom {
 
     this.lastMove = {
       playerId,
-      playerName: player.accountName,
+      playerName: player.name,
       words: [],
       score: 0,
       message: `Exchanged ${uniqueTileIds.length} tile${uniqueTileIds.length === 1 ? '' : 's'}.`,
     };
     this.recordTurn({
       playerId,
-      playerName: player.accountName,
+      playerName: player.name,
       kind: 'exchange',
       words: [],
       totalScore: 0,
@@ -357,35 +364,6 @@ export class GameRoom {
     }
   }
 
-  hasParticipant(accountId: string): boolean {
-    return [...this.players.values()].some((player) => player.accountId === accountId);
-  }
-
-  summaryFor(accountId: string): GameSummaryState | null {
-    const player = this.getPlayerByAccountId(accountId);
-    if (!player) return null;
-
-    const opponent = [...this.players.values()].find((candidate) => candidate.accountId !== accountId);
-    return {
-      gameId: this.id,
-      players: [...this.players.values()]
-        .sort((left, right) => left.seat - right.seat)
-        .map((candidate) => ({
-          id: candidate.id,
-          accountId: candidate.accountId,
-          accountName: candidate.accountName,
-          seat: candidate.seat,
-          connected: candidate.connected,
-        })),
-      currentPlayerId: this.currentPlayerId(),
-      opponentName: opponent?.accountName ?? 'Waiting for opponent',
-      yourTurn: this.currentPlayerId() === player.id,
-      gameEnded: this.gameEnded,
-      teamScore: this.teamScore,
-      updatedAt: this.updatedAt,
-    };
-  }
-
   private currentPlayerId(): string | null {
     if (this.gameEnded || this.turnOrder.length === 0) return null;
     return this.turnOrder[this.currentTurnIndex] ?? this.turnOrder[0] ?? null;
@@ -415,6 +393,23 @@ export class GameRoom {
     this.advanceTurn();
   }
 
+  summary(): GameSummaryState {
+    const playersBySeat = [1, 2].map((seat) => this.playerForSeat(seat));
+    return {
+      gameId: this.id,
+      players: playersBySeat.map((player, index) => ({
+        id: player?.id ?? null,
+        name: player?.name ?? null,
+        seat: index + 1,
+        connected: player?.connected ?? false,
+      })),
+      currentPlayerId: this.players.size < 2 ? null : this.currentPlayerId(),
+      gameEnded: this.gameEnded,
+      teamScore: this.teamScore,
+      updatedAt: this.updatedAt,
+    };
+  }
+
   snapshot(): GameState {
     return {
       gameId: this.id,
@@ -426,8 +421,7 @@ export class GameRoom {
         .sort((left, right) => left.seat - right.seat)
         .map((player): PlayerPublicState => ({
           id: player.id,
-          accountId: player.accountId,
-          accountName: player.accountName,
+          name: player.name,
           seat: player.seat,
           connected: player.connected,
           rack: {
@@ -435,7 +429,7 @@ export class GameRoom {
             tiles: [...player.rack].sort(sortTiles),
           },
         })),
-      currentPlayerId: this.currentPlayerId(),
+      currentPlayerId: this.players.size < 2 ? null : this.currentPlayerId(),
       gameEnded: this.gameEnded,
       finalTurnsRemaining: this.finalTurnsRemaining,
       boardLayout: this.boardLayout,
@@ -447,21 +441,14 @@ export class GameRoom {
     };
   }
 
-  assignments(): Array<{ playerId: string; accountId: string }> {
-    return [...this.players.values()].map((player) => ({
-      playerId: player.id,
-      accountId: player.accountId,
-    }));
-  }
-
   toPersistedState(): PersistedGameState {
     return {
       id: this.id,
       board: [...this.board.values()].sort(sortTiles),
       players: [...this.players.values()].map((player) => ({
         id: player.id,
-        accountId: player.accountId,
-        accountName: player.accountName,
+        claimToken: player.claimToken,
+        name: player.name,
         seat: player.seat,
         rack: [...player.rack].sort(sortTiles),
       })),
@@ -490,8 +477,8 @@ export class GameRoom {
     room.players = new Map(
       state.players.map((player) => [player.id, {
         id: player.id,
-        accountId: player.accountId,
-        accountName: player.accountName,
+        claimToken: player.claimToken,
+        name: player.name,
         seat: player.seat,
         socket: null,
         rack: [...player.rack].sort(sortTiles),
@@ -566,12 +553,6 @@ export class GameRoom {
   private canChangeBoardLayout(): boolean {
     return this.board.size === 0 && this.turnHistory.every((entry) => entry.kind === 'reset');
   }
-
-  private returnRackToBag(player: Player): void {
-    this.bag.push(...player.rack.map((tile) => tile.letter));
-    shuffleInPlace(this.bag);
-    player.rack = [];
-  }
 }
 
 function getGame(gameId: string): GameRoom | null {
@@ -580,27 +561,22 @@ function getGame(gameId: string): GameRoom | null {
   return rooms.get(normalizedGameId) ?? null;
 }
 
-function listGamesForAccount(accountId: string): GameSummaryState[] {
-  return [...rooms.values()]
-    .map((room) => room.summaryFor(accountId))
-    .filter((summary): summary is GameSummaryState => summary !== null)
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-}
-
-function createGame(creator: AccountState, opponent: AccountState): GameRoom {
+function createGame(name: string): { game: GameRoom; player: Player } {
   const game = new GameRoom(randomUUID(), persistGames);
-  game.addPlayer(creator, 0, null);
-  game.addPlayer(opponent, 1, null);
+  const player = game.claimSeat(name, 1, randomUUID(), null);
+  if (!player) {
+    throw new Error('Could not claim the first seat for the new game.');
+  }
   rooms.set(game.id, game);
   persistGames();
-  return game;
+  return { game, player };
 }
 
-function attachSocketToGame(socket: LiveSocket, sessionToken: string, gameId: string): void {
-  const account = accountBySession(sessionToken);
-  if (!account) {
-    send(socket, { type: 'error', msg: 'Sign in again to continue.' });
-    socket.close(1008, 'Invalid session.');
+function attachSocketToGame(socket: LiveSocket, claimToken: string, gameId: string): void {
+  const normalizedClaimToken = claimToken.trim();
+  if (normalizedClaimToken.length === 0) {
+    send(socket, { type: 'error', msg: 'Missing claim token.' });
+    socket.close(1008, 'Missing claim token.');
     return;
   }
 
@@ -611,15 +587,15 @@ function attachSocketToGame(socket: LiveSocket, sessionToken: string, gameId: st
     return;
   }
 
-  const player = game.reconnectAccount(account.id, socket);
+  const player = game.reconnectClaim(normalizedClaimToken, socket);
   if (!player) {
-    send(socket, { type: 'error', msg: 'This account is not a player in that game.' });
-    socket.close(1008, 'Account not in game.');
+    send(socket, { type: 'error', msg: 'That claim token does not match a seat in this game.' });
+    socket.close(1008, 'Invalid claim token.');
     return;
   }
 
   leaveAssignedGame(socket);
-  socketAssignments.set(socket, { room: game, playerId: player.id, accountId: account.id });
+  socketAssignments.set(socket, { room: game, playerId: player.id });
   game.broadcastState();
 }
 
@@ -794,13 +770,13 @@ wss.on('connection', (socket: WebSocket, request: IncomingMessage) => {
 
   const requestUrl = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
   const requestedGameId = requestUrl.searchParams.get('game');
-  const requestedSessionToken = requestUrl.searchParams.get('session');
-  if (!requestedGameId || !requestedSessionToken) {
-    send(liveSocket, { type: 'error', msg: 'Missing game or session.' });
-    liveSocket.close(1008, 'Missing game or session.');
+  const requestedClaimToken = requestUrl.searchParams.get('claim');
+  if (!requestedGameId || !requestedClaimToken) {
+    send(liveSocket, { type: 'error', msg: 'Missing game or claim token.' });
+    liveSocket.close(1008, 'Missing game or claim token.');
     return;
   }
-  attachSocketToGame(liveSocket, requestedSessionToken, requestedGameId);
+  attachSocketToGame(liveSocket, requestedClaimToken, requestedGameId);
 
   liveSocket.on('message', (raw) => {
     let msg: unknown;
@@ -877,24 +853,32 @@ function handleHttpRequest(request: IncomingMessage, response: ServerResponse): 
   }
 
   const requestUrl = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
-
-  if (requestUrl.pathname === '/api/account/login' && request.method === 'POST') {
-    void handleAccountLogin(request, response);
-    return;
-  }
-
-  if (requestUrl.pathname === '/api/account/overview' && request.method === 'GET') {
-    handleAccountOverview(requestUrl, response);
-    return;
-  }
+  const gamePathMatch = requestUrl.pathname.match(/^\/api\/games\/([A-Za-z0-9_-]{1,64})$/);
+  const gameClaimMatch = requestUrl.pathname.match(/^\/api\/games\/([A-Za-z0-9_-]{1,64})\/claim$/);
+  const gamePlayerMatch = requestUrl.pathname.match(/^\/api\/games\/([A-Za-z0-9_-]{1,64})\/player$/);
 
   if (requestUrl.pathname === '/api/games' && request.method === 'POST') {
     void handleCreateGame(request, response);
     return;
   }
 
+  if (gamePathMatch && request.method === 'GET') {
+    handleGameSummary(gamePathMatch[1], response);
+    return;
+  }
+
+  if (gameClaimMatch && request.method === 'POST') {
+    void handleClaimGame(request, response, gameClaimMatch[1]);
+    return;
+  }
+
+  if (gamePlayerMatch && request.method === 'PATCH') {
+    void handleRenamePlayer(request, response, gamePlayerMatch[1]);
+    return;
+  }
+
   if (request.method !== 'GET' && request.method !== 'HEAD') {
-    response.writeHead(405, { Allow: 'GET, HEAD' });
+    response.writeHead(405, { Allow: 'GET, HEAD, POST, PATCH' });
     response.end();
     return;
   }
@@ -929,67 +913,102 @@ function handleHttpRequest(request: IncomingMessage, response: ServerResponse): 
   createReadStream(target).pipe(response);
 }
 
-async function handleAccountLogin(request: IncomingMessage, response: ServerResponse): Promise<void> {
+async function handleCreateGame(request: IncomingMessage, response: ServerResponse): Promise<void> {
   const body = await readJsonBody(request);
-  const accountName = typeof body.accountName === 'string' ? body.accountName : '';
-
-  try {
-    const { account, sessionToken } = loginAccount(accountName);
-    sendJson(response, 200, {
-      account,
-      sessionToken,
-      games: listGamesForAccount(account.id),
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Could not sign in.';
-    sendJson(response, 400, { msg: message });
-  }
-}
-
-function handleAccountOverview(requestUrl: URL, response: ServerResponse): void {
-  const sessionToken = requestUrl.searchParams.get('session');
-  if (!sessionToken) {
-    sendJson(response, 400, { msg: 'Missing session token.' });
+  const name = normalizePlayerName(typeof body.name === 'string' ? body.name : '');
+  if (!name) {
+    sendJson(response, 400, { msg: 'Names must be 1-24 characters and use letters, numbers, spaces, apostrophes, periods, underscores, or dashes.' });
     return;
   }
 
-  const account = accountBySession(sessionToken);
-  if (!account) {
-    sendJson(response, 401, { msg: 'Session expired.' });
-    return;
-  }
-
+  const { game, player } = createGame(name);
   sendJson(response, 200, {
-    account,
-    games: listGamesForAccount(account.id),
+    game: game.summary(),
+    claim: buildClaimResponse(game.id, player),
   });
 }
 
-async function handleCreateGame(request: IncomingMessage, response: ServerResponse): Promise<void> {
-  const body = await readJsonBody(request);
-  const sessionToken = typeof body.sessionToken === 'string' ? body.sessionToken : '';
-  const opponentName = typeof body.opponentName === 'string' ? body.opponentName : '';
-
-  const account = accountBySession(sessionToken);
-  if (!account) {
-    sendJson(response, 401, { msg: 'Session expired.' });
+function handleGameSummary(gameId: string, response: ServerResponse): void {
+  const game = getGame(gameId);
+  if (!game) {
+    sendJson(response, 404, { msg: 'Game not found.' });
     return;
   }
 
-  const opponent = accountByName(opponentName);
-  if (!opponent) {
-    sendJson(response, 404, { msg: 'That account does not exist yet.' });
-    return;
-  }
-  if (opponent.id === account.id) {
-    sendJson(response, 400, { msg: 'Choose another account to start a game.' });
-    return;
-  }
-
-  const game = createGame(account, opponent);
   sendJson(response, 200, {
-    game: game.summaryFor(account.id),
-    games: listGamesForAccount(account.id),
+    game: game.summary(),
+  });
+}
+
+async function handleClaimGame(request: IncomingMessage, response: ServerResponse, gameId: string): Promise<void> {
+  const game = getGame(gameId);
+  if (!game) {
+    sendJson(response, 404, { msg: 'Game not found.' });
+    return;
+  }
+
+  if (!game.hasOpenSeat()) {
+    sendJson(response, 409, { msg: 'Both seats are already claimed.' });
+    return;
+  }
+
+  const body = await readJsonBody(request);
+  const name = normalizePlayerName(typeof body.name === 'string' ? body.name : '');
+  if (!name) {
+    sendJson(response, 400, { msg: 'Names must be 1-24 characters and use letters, numbers, spaces, apostrophes, periods, underscores, or dashes.' });
+    return;
+  }
+
+  const player = game.claimSeat(name);
+  if (!player) {
+    sendJson(response, 409, { msg: 'Could not claim an open seat in this game.' });
+    return;
+  }
+
+  persistGames();
+  game.broadcastState();
+  sendJson(response, 200, {
+    game: game.summary(),
+    claim: buildClaimResponse(game.id, player),
+  });
+}
+
+async function handleRenamePlayer(request: IncomingMessage, response: ServerResponse, gameId: string): Promise<void> {
+  const game = getGame(gameId);
+  if (!game) {
+    sendJson(response, 404, { msg: 'Game not found.' });
+    return;
+  }
+
+  const body = await readJsonBody(request);
+  const claimToken = typeof body.claimToken === 'string' ? body.claimToken.trim() : '';
+  if (claimToken.length === 0) {
+    sendJson(response, 400, { msg: 'Missing claim token.' });
+    return;
+  }
+
+  const player = game.getPlayerByClaimToken(claimToken);
+  if (!player) {
+    sendJson(response, 401, { msg: 'That claim token does not match a seat in this game.' });
+    return;
+  }
+
+  const name = normalizePlayerName(typeof body.name === 'string' ? body.name : '');
+  if (!name) {
+    sendJson(response, 400, { msg: 'Names must be 1-24 characters and use letters, numbers, spaces, apostrophes, periods, underscores, or dashes.' });
+    return;
+  }
+
+  const reason = game.updatePlayerName(player.id, name);
+  if (reason) {
+    sendJson(response, 400, { msg: reason });
+    return;
+  }
+
+  game.broadcastState();
+  sendJson(response, 200, {
+    game: game.summary(),
+    claim: buildClaimResponse(game.id, game.getPlayer(player.id) ?? player),
   });
 }
 
@@ -1059,6 +1078,28 @@ async function readJsonBody(request: IncomingMessage): Promise<Record<string, un
   } catch {
     return {};
   }
+}
+
+function normalizePlayerName(name: string): string | null {
+  const trimmedName = name.trim();
+  if (!/^[A-Za-z0-9 _.'-]{1,24}$/.test(trimmedName)) return null;
+  return trimmedName;
+}
+
+function buildClaimResponse(gameId: string, player: Player): {
+  gameId: string;
+  claimToken: string;
+  playerId: string;
+  playerName: string;
+  seat: number;
+} {
+  return {
+    gameId,
+    claimToken: player.claimToken,
+    playerId: player.id,
+    playerName: player.name,
+    seat: player.seat,
+  };
 }
 
 function normalizeGameId(gameId: string): string | null {

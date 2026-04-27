@@ -13,13 +13,15 @@ for (const [letter, expectedCount] of Object.entries(TILE_DISTRIBUTION)) {
 }
 
 const room = new GameRoom('bag-test');
-const firstPlayer = room.addPlayer({ id: 'account-a', name: 'Alice' }, 0, null);
-const secondPlayer = room.addPlayer({ id: 'account-b', name: 'Blair' }, 1, null);
+const firstPlayer = room.claimSeat('Alice', 1, 'claim-a', null);
+const secondPlayer = room.claimSeat('Blair', 2, 'claim-b', null);
+assert.ok(firstPlayer);
+assert.ok(secondPlayer);
 
 let state = room.snapshot();
 assert.equal(state.players.length, 2);
-assert.equal(state.players[0]?.accountName, 'Alice');
-assert.equal(state.players[1]?.accountName, 'Blair');
+assert.equal(state.players[0]?.name, 'Alice');
+assert.equal(state.players[1]?.name, 'Blair');
 assert.equal(state.remainingTiles, totalTiles - 14);
 assert.equal(state.boardLayout, 'scrabble');
 assert.equal(state.canChangeBoardLayout, true);
@@ -76,8 +78,10 @@ assert.equal(state.boardLayout, 'words-with-friends');
 assert.equal(state.canChangeBoardLayout, true);
 
 const finalRoundSeed = new GameRoom('final-round');
-const finalRoundFirst = finalRoundSeed.addPlayer({ id: 'account-c', name: 'Casey' }, 0, null);
-const finalRoundSecond = finalRoundSeed.addPlayer({ id: 'account-d', name: 'Drew' }, 1, null);
+const finalRoundFirst = finalRoundSeed.claimSeat('Casey', 1, 'claim-c', null);
+const finalRoundSecond = finalRoundSeed.claimSeat('Drew', 2, 'claim-d', null);
+assert.ok(finalRoundFirst);
+assert.ok(finalRoundSecond);
 const finalRoundPersisted = finalRoundSeed.toPersistedState();
 finalRoundPersisted.bag = [];
 finalRoundPersisted.lastMove = null;
@@ -111,11 +115,14 @@ assert.equal(state.currentPlayerId, null);
 assert.equal(finalRoundRoom.passTurn(finalRoundSecond.id), 'Game is over.');
 
 const reconnectRoom = new GameRoom('reconnect-room');
-const reconnectFirst = reconnectRoom.addPlayer({ id: 'account-e', name: 'Em' }, 0, null);
-const reconnectSecond = reconnectRoom.addPlayer({ id: 'account-f', name: 'Finn' }, 1, null);
-assert.equal(reconnectRoom.getPlayerByAccountId('account-e')?.id, reconnectFirst.id);
-assert.equal(reconnectRoom.getPlayerByAccountId('account-f')?.id, reconnectSecond.id);
-assert.equal(reconnectRoom.summaryFor('account-e')?.opponentName, 'Finn');
-assert.equal(reconnectRoom.summaryFor('account-f')?.opponentName, 'Em');
+const reconnectFirst = reconnectRoom.claimSeat('Em', 1, 'claim-e', null);
+const reconnectSecond = reconnectRoom.claimSeat('Finn', 2, 'claim-f', null);
+assert.ok(reconnectFirst);
+assert.ok(reconnectSecond);
+assert.equal(reconnectRoom.getPlayerByClaimToken('claim-e')?.id, reconnectFirst.id);
+assert.equal(reconnectRoom.getPlayerByClaimToken('claim-f')?.id, reconnectSecond.id);
+const reconnectSummary = reconnectRoom.summary();
+assert.equal(reconnectSummary.players[0]?.name, 'Em');
+assert.equal(reconnectSummary.players[1]?.name, 'Finn');
 
 console.log('Game room tests passed.');

@@ -21,33 +21,24 @@ export type TileHolderState = {
 
 export type PlayerPublicState = {
   id: string;
-  accountId: string;
-  accountName: string;
+  name: string;
   seat: number;
   rack: TileHolderState;
   connected: boolean;
 };
 
-export type AccountState = {
-  id: string;
-  name: string;
-};
-
-export type GameParticipantState = {
-  id: string;
-  accountId: string;
-  accountName: string;
+export type GameSummaryPlayerState = {
+  id: string | null;
+  name: string | null;
   seat: number;
   connected: boolean;
 };
 
 export type GameSummaryState = {
   gameId: string;
-  players: GameParticipantState[];
+  players: GameSummaryPlayerState[];
   currentPlayerId: string | null;
   gameEnded: boolean;
-  opponentName: string | null;
-  yourTurn: boolean;
   teamScore: number;
   updatedAt: string;
 };

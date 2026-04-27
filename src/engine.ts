@@ -12,37 +12,47 @@ import type {
 import { Actions } from './actions.ts'
 import { Board } from './board.ts'
 import { createBoardZoomController } from './boardZoom.ts'
+import {
+  claimForGame,
+  readClaimStore,
+  removeStoredClaim,
+  setDefaultPlayerName,
+  upsertStoredClaim,
+  type StoredClaim,
+} from './claimStore.ts'
 import { gridCoordsToTileHolderCoords } from './coordinates.ts'
+import {
+  claimInviteGame,
+  createInviteGame,
+  fetchGameSummary,
+  renameClaimedPlayer,
+} from './gameApi.ts'
+import {
+  type ClaimSession,
+  gameIdFromState,
+  playerName,
+  shortGameId,
+  summaryOpponentName,
+  type GameSummary,
+} from './gameModels.ts'
 import { Hand } from './hand.ts'
 import { premiumSquareAt, premiumSquareLabel, type BoardLayoutType } from '../shared/boardBonuses.ts'
-import { clearSessionCookie, readSessionCookie, writeSessionCookie } from './sessionCookie.ts'
 import { Tile } from './tile.ts'
 import { makeDraggable } from './draggable.ts'
 import {
-  clearClientState,
-  clearPlayerId,
+  clearCurrentPlayerId,
+  getCurrentPlayerId,
   getClientState,
-  getPlayerId,
-  hasPlayerId,
+  hasCurrentPlayerId,
   hydrateClientState,
-  setPlayerId,
+  setCurrentPlayerId,
 } from './clientState.ts'
-import { createGame, fetchAccountOverview, loginAccount } from './accountApi.ts'
-import {
-  describeGameSummary,
-  gameIdFromState,
-  gameSummaryFromState,
-  playerAccountName,
-  playerSeat,
-  shortGameId,
-  type GameSummary,
-} from './accountModels.ts'
 import { resolveWebSocketUrl } from './network.ts'
 
 const reconnectBaseDelayMs = 400;
 const reconnectMaxDelayMs = 8000;
 const APP_SHELL_WIDTH = `${parseInt(APP_WIDTH, 10) + 304}px`;
-const ACCOUNT_NAME_MAX_LENGTH = 64;
+const PLAYER_NAME_MAX_LENGTH = 24;
 const PREVIEW_DEBOUNCE_MS = 120;
 
 let socket: WebSocket | null = null;
@@ -50,6 +60,7 @@ let reconnectAttempts = 0;
 let reconnectTimerId: number | null = null;
 let socketGeneration = 0;
 let latestGameState: GameState | null = null;
+let currentGameSummary: GameSummary | null = null;
 let waitingForServer = false;
 let accountRequestInFlight = false;
 let statusScoreCard: HTMLDivElement;
@@ -108,14 +119,15 @@ if (!appRoot) {
 }
 const app = appRoot as HTMLDivElement;
 app.style.width = `min(calc(100vw - 28px), ${APP_SHELL_WIDTH})`;
-const initialSession = readSessionCookie();
+const initialStore = readClaimStore();
+const initialGameId = currentGameIdFromLocation();
+const initialClaim = claimForGame(initialGameId);
 hydrateClientState({
-  account: initialSession.accountId && initialSession.accountName
-    ? { id: initialSession.accountId, name: initialSession.accountName }
-    : null,
-  currentGameId: initialSession.currentGameId ?? null,
-  playerId: initialSession.playerId ?? null,
-  sessionToken: initialSession.sessionToken ?? null,
+  claims: initialStore.claims,
+  currentClaimToken: initialClaim?.claimToken ?? null,
+  currentGameId: initialGameId,
+  currentPlayerId: initialClaim?.playerId ?? null,
+  defaultPlayerName: initialStore.defaultPlayerName,
 });
 
 const headerContainer = document.querySelector('.container') as HTMLDivElement | null;
@@ -132,7 +144,7 @@ const accountIdentity = document.createElement('div');
 accountIdentity.classList.add('room-bar__room');
 const accountLabel = document.createElement('span');
 accountLabel.classList.add('room-bar__label');
-accountLabel.textContent = 'Account';
+accountLabel.textContent = 'Player';
 accountCurrentValue = document.createElement('span');
 accountCurrentValue.classList.add('room-bar__current');
 accountGames = document.createElement('div');
@@ -152,7 +164,7 @@ accountControls.classList.add('room-bar__controls');
 accountInput = document.createElement('input');
 accountInput.classList.add('room-input');
 accountInput.type = 'text';
-accountInput.maxLength = ACCOUNT_NAME_MAX_LENGTH;
+accountInput.maxLength = PLAYER_NAME_MAX_LENGTH;
 accountInput.autocomplete = 'off';
 accountInput.spellcheck = false;
 accountPrimaryButton = document.createElement('button');
@@ -501,29 +513,30 @@ board.el.appendChild(previewLayer);
 updateActionButtons();
 renderTurnHistory([]);
 syncAccountUi();
-void restoreAccountSession();
+if (initialGameId) {
+  void openGame(initialGameId);
+} else {
+  clearCurrentGameState('Create a game to get a shareable invite link.');
+}
 
 function syncGameState(state: GameState): void {
   clearMovePreview();
   const previousState = latestGameState;
   latestGameState = state;
   currentBoardLayout = state.boardLayout;
-  const liveSummary = gameSummaryFromState(state);
-  if (liveSummary) {
-    updateStoredGameSummary(liveSummary);
-    if (getClientState().currentGameId !== liveSummary.gameId) {
-      hydrateClientState({ currentGameId: liveSummary.gameId });
-    }
+  currentGameSummary = summaryFromState(state);
+  if (getClientState().currentGameId !== state.gameId) {
+    hydrateClientState({ currentGameId: state.gameId });
   }
   renderBoardBackground(state.boardLayout);
   selectedExchangeIds = new Set();
   const player = currentPlayer(state);
   if (player) {
-    setPlayerId(player.id);
+    setCurrentPlayerId(player.id);
+    syncStoredClaimFromState(state, player);
   } else {
-    clearPlayerId();
+    clearCurrentPlayerId();
   }
-  persistSessionCookie();
   const isMyTurn = Boolean(player && state.currentPlayerId === player.id);
 
   board.clearTiles();
@@ -561,14 +574,14 @@ function clearCurrentGameState(message: string, clearSelection = false): void {
   stopScoreAnimation();
   hideScoreGain();
   latestGameState = null;
+  currentGameSummary = null;
   currentBoardLayout = 'scrabble';
   renderBoardBackground(currentBoardLayout);
   selectedExchangeIds = new Set();
-  clearPlayerId();
+  clearCurrentPlayerId();
   if (clearSelection) {
-    hydrateClientState({ currentGameId: null });
+    hydrateClientState({ currentClaimToken: null, currentGameId: null, currentPlayerId: null });
   }
-  persistSessionCookie();
   if (!getClientState().currentGameId) {
     disconnectSocket();
   }
@@ -579,7 +592,7 @@ function clearCurrentGameState(message: string, clearSelection = false): void {
   hand.clearTiles();
   renderTurnHistory([]);
   statusScoreValue.textContent = '0';
-  statusScoreMeta.textContent = getClientState().currentGameId ? 'Waiting for game state' : 'Choose a game to start';
+  statusScoreMeta.textContent = getClientState().currentGameId ? 'Waiting for game state' : 'Create or open an invite game';
   renderAccountGames();
   setStatus(message);
   updateActionButtons();
@@ -595,13 +608,8 @@ function createTile(tileState: TileState, tileHolder: Hand | Board, played: bool
 }
 
 function currentPlayer(state: GameState): PlayerPublicState | null {
-  const { account } = getClientState();
-  if (account) {
-    const accountPlayer = state.players.find((player) => player.accountId === account.id);
-    if (accountPlayer) return accountPlayer;
-  }
-  if (!hasPlayerId()) return null;
-  const playerId = getPlayerId();
+  if (!hasCurrentPlayerId()) return null;
+  const playerId = getCurrentPlayerId();
   return state.players.find((player) => player.id === playerId) ?? null;
 }
 
@@ -880,37 +888,86 @@ function clearMovePreviewMarks(): void {
 }
 
 function syncAccountUi(): void {
-  const { account, sessionToken } = getClientState();
-  const isAuthenticated = Boolean(account && sessionToken);
-  accountCurrentValue.textContent = account?.name ?? 'Sign in';
-  accountInput.placeholder = isAuthenticated ? 'opponent account' : 'account name';
-  accountPrimaryButton.textContent = isAuthenticated ? 'New game' : 'Continue';
-  accountSecondaryButton.textContent = isAuthenticated ? 'Sign out' : 'Clear';
-  accountPrimaryButton.disabled = accountRequestInFlight;
-  accountSecondaryButton.disabled = accountRequestInFlight;
+  const { claims, currentClaimToken, currentGameId, defaultPlayerName } = getClientState();
+  const activeClaim = currentStoredClaim();
+  const displaySummary = currentDisplayedSummary();
+  const currentName = activeClaim?.playerName ?? defaultPlayerName;
+  const hasOpenSeat = displaySummary ? displaySummary.players.some((player) => player.id === null) : true;
+
+  accountCurrentValue.textContent = currentName || 'Set your name';
+  if (document.activeElement !== accountInput) {
+    accountInput.value = currentName;
+  }
+  accountInput.placeholder = 'your name';
+
+  if (currentGameId) {
+    accountPrimaryButton.textContent = currentClaimToken ? 'Save name' : 'Claim seat';
+    accountSecondaryButton.textContent = 'Copy invite';
+  } else {
+    accountPrimaryButton.textContent = 'Create game';
+    accountSecondaryButton.textContent = claims.length > 0 ? 'Latest game' : 'Clear';
+  }
+
+  accountPrimaryButton.disabled = accountRequestInFlight || (
+    currentGameId !== null &&
+    !currentClaimToken &&
+    !hasOpenSeat
+  );
+  accountSecondaryButton.disabled = accountRequestInFlight || (
+    currentGameId === null &&
+    claims.length === 0 &&
+    accountInput.value.trim().length === 0
+  );
+
   renderAccountGames();
 }
 
 function renderAccountGames(): void {
-  const { account, currentGameId, games } = getClientState();
-  if (games.length === 0) {
-    accountGames.replaceChildren(renderEmptyGameChip(account ? 'No games yet' : 'No active session'));
+  const { claims, currentGameId, currentPlayerId } = getClientState();
+  const displaySummary = currentDisplayedSummary();
+  if (currentGameId && displaySummary) {
+    const chips = displaySummary.players.map((player) => {
+      const chip = document.createElement('div');
+      chip.classList.add('room-player');
+      if (player.id && currentPlayerId === player.id) {
+        chip.classList.add('room-player--self');
+      }
+
+      const label = document.createElement('span');
+      label.classList.add('room-player__label');
+      label.textContent = `Seat ${player.seat}`;
+
+      const value = document.createElement('strong');
+      value.classList.add('room-player__value');
+      value.textContent = player.name ?? 'Waiting';
+
+      const stateText = document.createElement('span');
+      stateText.classList.add('room-player__state');
+      stateText.textContent = player.id
+        ? (player.connected ? 'connected' : 'away')
+        : 'open';
+
+      chip.append(label, value, stateText);
+      return chip;
+    });
+
+    accountGames.replaceChildren(...chips);
     return;
   }
 
-  const chips = games.map((game, index) => {
-    const isSelected = currentGameId === game.gameId;
-    const liveSummary = isSelected && latestGameState && gameIdFromState(latestGameState) === game.gameId
-      ? gameSummaryFromState(latestGameState) ?? game
-      : game;
-    const summary = describeGameSummary(liveSummary, account?.name ?? null);
+  if (claims.length === 0) {
+    accountGames.replaceChildren(renderEmptyGameChip('Create a game to get a shareable invite link'));
+    return;
+  }
+
+  const chips = claims.map((claim, index) => {
     const chip = document.createElement('button');
     chip.type = 'button';
     chip.classList.add('room-player');
     chip.style.cursor = 'pointer';
     chip.style.textAlign = 'left';
     chip.disabled = accountRequestInFlight;
-    if (isSelected) {
+    if (currentGameId === claim.gameId) {
       chip.classList.add('room-player--self');
       chip.setAttribute('aria-pressed', 'true');
     } else {
@@ -919,19 +976,19 @@ function renderAccountGames(): void {
 
     const label = document.createElement('span');
     label.classList.add('room-player__label');
-    label.textContent = isSelected ? 'Current game' : `Game ${index + 1}`;
+    label.textContent = index === 0 ? 'Latest game' : `Game ${index + 1}`;
 
     const value = document.createElement('strong');
     value.classList.add('room-player__value');
-    value.textContent = summary.title;
+    value.textContent = claim.opponentName ?? `Game ${shortGameId(claim.gameId)}`;
 
     const stateText = document.createElement('span');
     stateText.classList.add('room-player__state');
-    stateText.textContent = isSelected ? selectedGameStatusText(liveSummary) : summary.status;
+    stateText.textContent = `seat ${claim.seat}`;
 
     chip.append(label, value, stateText);
     chip.addEventListener('click', () => {
-      void selectGame(game.gameId);
+      void openGame(claim.gameId);
     });
     return chip;
   });
@@ -945,7 +1002,7 @@ function renderEmptyGameChip(message: string): HTMLDivElement {
 
   const label = document.createElement('span');
   label.classList.add('room-player__label');
-  label.textContent = 'Games';
+  label.textContent = 'Invite games';
 
   const value = document.createElement('strong');
   value.classList.add('room-player__value');
@@ -955,21 +1012,40 @@ function renderEmptyGameChip(message: string): HTMLDivElement {
   return chip;
 }
 
+function currentDisplayedSummary(): GameSummary | null {
+  if (latestGameState && getClientState().currentGameId === gameIdFromState(latestGameState)) {
+    return summaryFromState(latestGameState);
+  }
+  return currentGameSummary;
+}
+
+function summaryFromState(state: GameState): GameSummary {
+  return {
+    gameId: state.gameId,
+    players: [1, 2].map((seat) => {
+      const player = state.players.find((candidate) => candidate.seat === seat) ?? null;
+      return {
+        id: player?.id ?? null,
+        name: player?.name ?? null,
+        seat,
+        connected: player?.connected ?? false,
+      };
+    }),
+    currentPlayerId: state.currentPlayerId,
+    gameEnded: state.gameEnded,
+    teamScore: state.teamScore,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 function selectedGameStatusText(summary: GameSummary): string {
-  const player = latestGameState ? currentPlayer(latestGameState) : null;
-  const seatLabel = player ? `seat ${playerSeat(player) ?? 1}` : null;
-  if (summary.gameEnded) {
-    return seatLabel ? `${seatLabel} / finished` : 'finished';
-  }
-  if (!socketIsOpen()) {
-    return seatLabel ? `${seatLabel} / reconnecting` : 'reconnecting';
-  }
-  if (latestGameState) {
-    if (player && latestGameState.currentPlayerId === player.id) {
-      return seatLabel ? `${seatLabel} / your turn` : 'your turn';
-    }
-  }
-  return seatLabel ? `${seatLabel} / live` : 'live';
+  const { currentPlayerId, currentClaimToken } = getClientState();
+  const currentPlayers = summary.players.filter((player) => player.id !== null);
+  if (summary.gameEnded) return 'finished';
+  if (currentPlayers.length < 2) return 'waiting for player 2';
+  if (!currentClaimToken) return 'game in progress';
+  if (!socketIsOpen()) return 'reconnecting';
+  return summary.currentPlayerId === currentPlayerId ? 'your turn' : 'their turn';
 }
 
 function renderTurnHistory(entries: TurnHistoryEntryState[]): void {
@@ -1138,64 +1214,102 @@ function formatCellPosition(col: number, row: number): string {
 
 async function handleAccountPrimaryAction(): Promise<void> {
   const inputValue = accountInput.value.trim();
-  const { account, sessionToken } = getClientState();
-
-  if (account && sessionToken) {
-    if (inputValue.length === 0) {
-      setStatus('Enter another account name to create a game.', 'error');
-      return;
-    }
-    if (inputValue.toLowerCase() === account.name.toLowerCase()) {
-      setStatus('Choose another account for the new game.', 'error');
-      return;
-    }
-    await createGameWithOpponent(inputValue);
-    return;
-  }
-
   if (inputValue.length === 0) {
-    setStatus('Enter an account name.', 'error');
+    setStatus('Enter your name first.', 'error');
     return;
   }
 
-  await loginOrCreateAccountByName(inputValue);
+  const { currentClaimToken, currentGameId } = getClientState();
+  if (!currentGameId) {
+    await createNewGame(inputValue);
+    return;
+  }
+
+  if (currentClaimToken) {
+    await renameCurrentPlayer(inputValue);
+    return;
+  }
+
+  await claimCurrentGame(inputValue);
 }
 
 function handleAccountSecondaryAction(): void {
-  if (getClientState().account) {
-    signOut();
+  const { claims, currentGameId } = getClientState();
+  if (currentGameId) {
+    void copyInviteLink(currentGameId);
+    return;
+  }
+
+  if (claims.length > 0) {
+    void openGame(claims[0].gameId);
     return;
   }
 
   accountInput.value = '';
-  setStatus('Enter an account name to start.');
+  setStatus('Set your name to create a shareable game.');
 }
 
-async function loginOrCreateAccountByName(accountName: string): Promise<void> {
+async function createNewGame(playerNameInput: string): Promise<void> {
   accountRequestInFlight = true;
   syncAccountUi();
-  setStatus(`Signing in as ${accountName}...`);
+  setStatus(`Creating a game for ${playerNameInput}...`);
 
   try {
-    const previousState = getClientState();
-    const result = await loginAccount(accountName);
-    const preferredGameId = previousState.account?.id === result.account.id
-      ? previousState.currentGameId
-      : null;
-    const selectedGameId = applyAuthenticatedSession({
-      account: result.account,
-      sessionToken: result.sessionToken,
-      games: result.games,
-      preferredGameId,
-    });
+    const result = await createInviteGame(playerNameInput);
+    setLocationGameId(result.game.gameId);
+    clearCurrentGameState(`Created game ${shortGameId(result.game.gameId)}.`);
+    rememberClaim(result.claim, result.game);
+    currentGameSummary = result.game;
+    hydrateClientState({ currentGameId: result.game.gameId });
+    syncAccountUi();
+    ensureGameSocket(true);
+  } catch (error) {
+    setStatus(errorMessage(error), 'error');
+  } finally {
+    accountRequestInFlight = false;
+    syncAccountUi();
+    updateActionButtons();
+  }
+}
 
-    accountInput.value = '';
-    if (selectedGameId) {
-      selectGame(selectedGameId);
-    } else {
-      clearCurrentGameState(
-        result.games.length > 0 ? 'Select a game or create a new one.' : 'Create a game to start playing.',
-      );
+async function claimCurrentGame(playerNameInput: string): Promise<void> {
+  const { currentGameId } = getClientState();
+  if (!currentGameId) return;
+
+  accountRequestInFlight = true;
+  syncAccountUi();
+  setStatus(`Claiming a seat in game ${shortGameId(currentGameId)}...`);
+
+  try {
+    const result = await claimInviteGame(currentGameId, playerNameInput);
+    rememberClaim(result.claim, result.game);
+    currentGameSummary = result.game;
+    syncAccountUi();
+    ensureGameSocket(true);
+  } catch (error) {
+    setStatus(errorMessage(error), 'error');
+  } finally {
+    accountRequestInFlight = false;
+    syncAccountUi();
+    updateActionButtons();
+  }
+}
+
+async function renameCurrentPlayer(playerNameInput: string): Promise<void> {
+  const { currentClaimToken, currentGameId } = getClientState();
+  if (!currentGameId || !currentClaimToken) return;
+
+  accountRequestInFlight = true;
+  syncAccountUi();
+  setStatus(`Saving your name as ${playerNameInput}...`);
+
+  try {
+    const result = await renameClaimedPlayer(currentGameId, currentClaimToken, playerNameInput);
+    rememberClaim(result.claim, result.game);
+    currentGameSummary = result.game;
+    syncAccountUi();
+    if (latestGameState) {
+      syncGameState(latestGameState);
     }
   } catch (error) {
     setStatus(errorMessage(error), 'error');
@@ -1206,156 +1320,119 @@ async function loginOrCreateAccountByName(accountName: string): Promise<void> {
   }
 }
 
-async function createGameWithOpponent(opponentName: string): Promise<void> {
-  const { account, sessionToken } = getClientState();
-  if (!account || !sessionToken) {
-    setStatus('Sign in before creating a game.', 'error');
-    return;
-  }
-
-  accountRequestInFlight = true;
-  syncAccountUi();
-  setStatus(`Creating a game with ${opponentName}...`);
-
-  try {
-    const result = await createGame(sessionToken, opponentName);
-    hydrateClientState({ games: result.games });
-    persistSessionCookie();
-    accountInput.value = '';
-    syncAccountUi();
-    selectGame(result.game.gameId);
-  } catch (error) {
-    setStatus(errorMessage(error), 'error');
-  } finally {
-    accountRequestInFlight = false;
-    syncAccountUi();
-    updateActionButtons();
-  }
-}
-
-async function restoreAccountSession(): Promise<void> {
-  const { currentGameId, sessionToken } = getClientState();
-  if (!sessionToken) {
-    clearCurrentGameState('Enter an account name to start.');
-    return;
-  }
-
-  accountRequestInFlight = true;
-  syncAccountUi();
-  setStatus('Restoring account session...');
-
-  try {
-    const overview = await fetchAccountOverview(sessionToken);
-    const selectedGameId = applyAuthenticatedSession({
-      account: overview.account,
-      sessionToken,
-      games: overview.games,
-      preferredGameId: currentGameId,
-    });
-    if (selectedGameId) {
-      selectGame(selectedGameId);
-    } else {
-      clearCurrentGameState(
-        overview.games.length > 0 ? 'Select a game or create a new one.' : 'Create a game to start playing.',
-      );
-    }
-  } catch {
-    clearClientState();
-    clearCurrentGameState('Session expired. Sign in again.', true);
-  } finally {
-    accountRequestInFlight = false;
-    syncAccountUi();
-    updateActionButtons();
-  }
-}
-
-function applyAuthenticatedSession({
-  account,
-  sessionToken,
-  games,
-  preferredGameId,
-}: {
-  account: NonNullable<ReturnType<typeof getClientState>['account']>;
-  sessionToken: string;
-  games: GameSummary[];
-  preferredGameId: string | null;
-}): string | null {
-  const selectedGameId = chooseSelectedGameId(preferredGameId, games);
+async function openGame(gameId: string): Promise<void> {
+  const activeClaim = claimForGame(gameId);
   hydrateClientState({
-    account,
-    currentGameId: selectedGameId,
-    games,
-    sessionToken,
+    currentClaimToken: activeClaim?.claimToken ?? null,
+    currentGameId: gameId,
+    currentPlayerId: activeClaim?.playerId ?? null,
   });
-  persistSessionCookie();
-  syncAccountUi();
-  return selectedGameId;
-}
-
-function chooseSelectedGameId(preferredGameId: string | null, games: GameSummary[]): string | null {
-  if (!preferredGameId) return null;
-  return games.some((game) => game.gameId === preferredGameId) ? preferredGameId : null;
-}
-
-function selectGame(gameId: string): void {
-  const { currentGameId, games } = getClientState();
-  if (!games.some((game) => game.gameId === gameId)) {
-    setStatus('That game is not in your account overview.', 'error');
-    return;
+  setLocationGameId(gameId);
+  clearCurrentGameState(`Loading game ${shortGameId(gameId)}.`);
+  if (!activeClaim) {
+    disconnectSocket();
   }
-
-  const alreadyLive = currentGameId === gameId &&
-    latestGameState !== null &&
-    gameIdFromState(latestGameState) === gameId &&
-    (socketIsOpen() || socket?.readyState === WebSocket.CONNECTING);
-  if (alreadyLive) {
-    setStatus(`Already connected to game ${shortGameId(gameId)}.`);
-    return;
+  syncAccountUi();
+  await loadCurrentGameSummary(gameId);
+  if (activeClaim) {
+    ensureGameSocket(true);
   }
-
-  waitingForServer = false;
-  hydrateClientState({ currentGameId: gameId });
-  persistSessionCookie();
-  syncAccountUi();
-  clearCurrentGameState(`Connecting to game ${shortGameId(gameId)}.`);
-  ensureGameSocket(true);
 }
 
-function signOut(): void {
-  accountRequestInFlight = false;
-  disconnectSocket();
-  clearClientState();
-  accountInput.value = '';
-  clearCurrentGameState('Signed out.', true);
+async function loadCurrentGameSummary(gameId: string): Promise<void> {
+  accountRequestInFlight = true;
   syncAccountUi();
+
+  try {
+    const result = await fetchGameSummary(gameId);
+    currentGameSummary = result.game;
+    syncAccountUi();
+    setStatus(selectedGameStatusText(result.game));
+  } catch (error) {
+    currentGameSummary = null;
+    hydrateClientState({
+      currentClaimToken: null,
+      currentGameId: null,
+      currentPlayerId: null,
+    });
+    setLocationGameId(null);
+    clearCurrentGameState(errorMessage(error), true);
+  } finally {
+    accountRequestInFlight = false;
+    syncAccountUi();
+    updateActionButtons();
+  }
 }
 
-function updateStoredGameSummary(summary: GameSummary): void {
-  const { games } = getClientState();
-  const nextGames = [...games];
-  const existingIndex = nextGames.findIndex((game) => game.gameId === summary.gameId);
-  if (existingIndex === -1) {
-    nextGames.unshift(summary);
+function rememberClaim(claim: ClaimSession, summary: GameSummary): void {
+  const nextStore = upsertStoredClaim({
+    gameId: claim.gameId,
+    claimToken: claim.claimToken,
+    playerId: claim.playerId,
+    playerName: claim.playerName,
+    seat: claim.seat,
+    opponentName: summaryOpponentName(summary, claim.playerId),
+    updatedAt: summary.updatedAt || new Date().toISOString(),
+  });
+  setDefaultPlayerName(claim.playerName);
+  hydrateClientState({
+    claims: nextStore.claims,
+    currentClaimToken: claim.claimToken,
+    currentGameId: claim.gameId,
+    currentPlayerId: claim.playerId,
+    defaultPlayerName: claim.playerName,
+  });
+}
+
+function syncStoredClaimFromState(state: GameState, player: PlayerPublicState): void {
+  const activeClaim = currentStoredClaim();
+  if (!activeClaim) return;
+
+  const summary = summaryFromState(state);
+  const nextStore = upsertStoredClaim({
+    ...activeClaim,
+    opponentName: summaryOpponentName(summary, player.id),
+    playerId: player.id,
+    playerName: player.name,
+    updatedAt: summary.updatedAt || new Date().toISOString(),
+  });
+  hydrateClientState({
+    claims: nextStore.claims,
+    currentPlayerId: player.id,
+    defaultPlayerName: player.name,
+  });
+}
+
+function currentStoredClaim(): StoredClaim | null {
+  const { currentClaimToken, currentGameId } = getClientState();
+  if (!currentGameId || !currentClaimToken) return null;
+  return claimForGame(currentGameId);
+}
+
+function setLocationGameId(gameId: string | null): void {
+  const url = new URL(window.location.href);
+  if (gameId) {
+    url.searchParams.set('game', gameId);
   } else {
-    nextGames[existingIndex] = summary;
+    url.searchParams.delete('game');
   }
-  hydrateClientState({ games: nextGames });
+  window.history.replaceState({}, '', url);
 }
 
-function persistSessionCookie(): void {
-  const { account, currentGameId, playerId, sessionToken } = getClientState();
-  if (!account || !sessionToken) {
-    clearSessionCookie();
-    return;
-  }
+function currentGameIdFromLocation(): string | null {
+  const gameId = new URL(window.location.href).searchParams.get('game');
+  return gameId && gameId.length > 0 ? gameId : null;
+}
 
-  writeSessionCookie({
-    accountId: account.id,
-    accountName: account.name,
-    currentGameId: currentGameId ?? undefined,
-    playerId: playerId ?? undefined,
-    sessionToken,
-  });
+async function copyInviteLink(gameId: string): Promise<void> {
+  const inviteLink = new URL(window.location.href);
+  inviteLink.searchParams.set('game', gameId);
+  try {
+    await navigator.clipboard.writeText(inviteLink.toString());
+    setStatus('Invite link copied.');
+  } catch {
+    setStatus(inviteLink.toString());
+  }
 }
 
 function setStatus(message: string, tone: 'normal' | 'error' = 'normal'): void {
@@ -1380,7 +1457,7 @@ function shortId(playerId: string | null | undefined): string {
 
 function historyPlayerLabel(playerId: string): string {
   const player = latestGameState?.players.find((candidate) => candidate.id === playerId);
-  return player ? playerAccountName(player) ?? shortId(player.id) : shortId(playerId);
+  return player ? playerName(player) : shortId(playerId);
 }
 
 function errorMessage(error: unknown): string {
@@ -1519,7 +1596,7 @@ function ensureGameSocket(forceReconnect = false): void {
 
   disconnectSocket();
   const generation = ++socketGeneration;
-  socket = new WebSocket(webSocketUrl(target.sessionToken, target.gameId));
+  socket = new WebSocket(webSocketUrl(target.claimToken, target.gameId));
 
   socket.addEventListener('open', () => {
     if (generation !== socketGeneration) return;
@@ -1575,32 +1652,32 @@ function socketIsOpen(): boolean {
   return Boolean(socket && socket.readyState === WebSocket.OPEN);
 }
 
-function webSocketUrl(sessionToken: string, gameId: string): string {
+function webSocketUrl(claimToken: string, gameId: string): string {
   const query = new URLSearchParams();
-  query.set('session', sessionToken);
+  query.set('claim', claimToken);
   query.set('game', gameId);
   return resolveWebSocketUrl('/ws', query);
 }
 
-function currentSocketTarget(): { sessionToken: string; gameId: string } | null {
-  const { currentGameId, sessionToken } = getClientState();
-  return currentGameId && sessionToken ? { sessionToken, gameId: currentGameId } : null;
+function currentSocketTarget(): { claimToken: string; gameId: string } | null {
+  const { currentClaimToken, currentGameId } = getClientState();
+  return currentGameId && currentClaimToken ? { claimToken: currentClaimToken, gameId: currentGameId } : null;
 }
 
 function socketMatchesTarget(
   candidateSocket: WebSocket,
-  target: { sessionToken: string; gameId: string },
+  target: { claimToken: string; gameId: string },
 ): boolean {
   const socketUrl = new URL(candidateSocket.url);
-  return socketUrl.searchParams.get('session') === target.sessionToken &&
+  return socketUrl.searchParams.get('claim') === target.claimToken &&
     socketUrl.searchParams.get('game') === target.gameId;
 }
 
-function shouldReconnectTo(target: { sessionToken: string; gameId: string }): boolean {
+function shouldReconnectTo(target: { claimToken: string; gameId: string }): boolean {
   const desiredTarget = currentSocketTarget();
   return Boolean(
     desiredTarget &&
-    desiredTarget.sessionToken === target.sessionToken &&
+    desiredTarget.claimToken === target.claimToken &&
     desiredTarget.gameId === target.gameId,
   );
 }
@@ -1641,7 +1718,19 @@ function handleServerMessage(message: unknown): void {
     }
     case 'error': {
       waitingForServer = false;
-      setStatus(readStringValue(message.msg) ?? 'The server returned an error.', 'error');
+      const serverMessage = readStringValue(message.msg) ?? 'The server returned an error.';
+      if (/claim token/i.test(serverMessage) || /game not found/i.test(serverMessage)) {
+        const { currentGameId } = getClientState();
+        if (currentGameId) {
+          const nextStore = removeStoredClaim(currentGameId);
+          hydrateClientState({
+            claims: nextStore.claims,
+            currentClaimToken: null,
+            currentPlayerId: null,
+          });
+        }
+      }
+      setStatus(serverMessage, 'error');
       updateActionButtons();
       break;
     }
