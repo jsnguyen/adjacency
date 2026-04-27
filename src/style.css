@@ -574,9 +574,7 @@ body {
 }
 
 .room-bar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
+    display: grid;
     gap: var(--panel-gap);
     width: 100%;
     margin-bottom: var(--panel-gap);
@@ -586,6 +584,14 @@ body {
     border-radius: var(--panel-radius);
     background: var(--surface);
     box-shadow: 0 10px 24px var(--surface-shadow);
+}
+
+.room-bar__top {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px 12px;
+    align-items: start;
+    min-width: 0;
 }
 
 .room-bar__meta,
@@ -608,6 +614,14 @@ body {
     min-width: 0;
 }
 
+.room-bar__meta {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(220px, 320px);
+    align-items: start;
+    gap: 10px;
+    width: 100%;
+}
+
 .room-bar__room,
 .lobby-panel__identity,
 .account-panel__identity,
@@ -626,10 +640,11 @@ body {
 }
 
 .room-bar__room {
-    align-items: baseline;
-    flex-direction: row;
-    gap: 8px;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
     flex: 0 0 auto;
+    min-width: 0;
 }
 
 .room-bar__label,
@@ -667,6 +682,22 @@ body {
     font-weight: 700;
     min-width: 0;
     overflow-wrap: anywhere;
+}
+
+.room-bar__status {
+    display: grid;
+    align-content: start;
+    gap: 3px;
+    min-height: 52px;
+    padding: 8px 10px;
+    border-radius: 12px;
+    min-width: 0;
+}
+
+.room-bar__status .room-player__value {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .account-summary__name {
@@ -742,6 +773,34 @@ body {
     gap: 8px;
     align-items: center;
     min-width: 0;
+}
+
+.room-bar__players {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.room-bar__players .room-player {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    padding: 8px 10px;
+    border-radius: var(--tile-radius);
+    white-space: normal;
+}
+
+.room-bar__players .room-player__value {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.room-bar__players .room-player__state {
+    justify-self: end;
 }
 
 .room-player,
@@ -822,6 +881,44 @@ body {
     align-items: center;
     gap: 8px;
     width: 100%;
+    min-width: 0;
+}
+
+.room-bar__controls--top {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(112px, auto));
+    gap: 8px;
+    width: auto;
+    justify-self: end;
+    flex-wrap: nowrap;
+}
+
+.room-bar__name-row {
+    display: grid;
+    grid-template-columns: minmax(0, 168px) minmax(0, 1fr);
+    gap: 10px;
+    align-items: center;
+    min-width: 0;
+}
+
+.room-bar__name-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+
+.room-bar__hint {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    line-height: 1.3;
+}
+
+.room-bar__name-controls {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
     min-width: 0;
 }
 
@@ -926,6 +1023,11 @@ body {
     font-weight: 700;
     cursor: pointer;
     transition: background-color 140ms ease, box-shadow 140ms ease, opacity 140ms ease;
+}
+
+.room-bar__controls--top button,
+.room-bar__name-controls button {
+    min-width: 116px;
 }
 
 .room-button:hover:not(:disabled),
@@ -1772,8 +1874,11 @@ a.lobby-list__item {
     }
 
     .room-bar {
-        flex-direction: column;
-        align-items: stretch;
+        gap: 10px;
+    }
+
+    .room-bar__top {
+        grid-template-columns: 1fr;
     }
 
     .room-bar__meta,
@@ -1794,6 +1899,10 @@ a.lobby-list__item {
         gap: 6px;
     }
 
+    .room-bar__meta {
+        grid-template-columns: 1fr;
+    }
+
     .room-bar__room,
     .lobby-panel__identity,
     .account-panel__identity,
@@ -1806,14 +1915,33 @@ a.lobby-list__item {
         width: 100%;
     }
 
+    .room-bar__status {
+        max-width: none;
+    }
+
     .room-bar__players,
     .game-list__players,
     .game-card__players,
     .current-games__players,
     .lobby-list__players {
         width: 100%;
-        flex-direction: column;
+        grid-template-columns: 1fr;
         align-items: stretch;
+    }
+
+    .room-bar__controls--top {
+        width: 100%;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        justify-self: stretch;
+    }
+
+    .room-bar__name-row {
+        grid-template-columns: 1fr;
+        gap: 8px;
+    }
+
+    .room-bar__name-controls {
+        grid-template-columns: minmax(0, 1fr) auto;
     }
 
     .room-input,

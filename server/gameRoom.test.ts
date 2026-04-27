@@ -125,4 +125,12 @@ const reconnectSummary = reconnectRoom.summary();
 assert.equal(reconnectSummary.players[0]?.name, 'Em');
 assert.equal(reconnectSummary.players[1]?.name, 'Finn');
 
+const unnamedRoom = new GameRoom('unnamed-room');
+const unnamedFirst = unnamedRoom.claimSeat(null, 1, 'claim-u1', null);
+const unnamedSecond = unnamedRoom.claimSeat('', 2, 'claim-u2', null);
+assert.ok(unnamedFirst);
+assert.ok(unnamedSecond);
+assert.equal(unnamedFirst.name, 'Player 1');
+assert.equal(unnamedSecond.name, 'Player 2');
+
 console.log('Game room tests passed.');

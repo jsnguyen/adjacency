@@ -14,10 +14,10 @@ type ClaimedGameResult = GameSummaryResult & {
   claim: ClaimSession;
 };
 
-export async function createInviteGame(name: string): Promise<ClaimedGameResult> {
+export async function createInviteGame(): Promise<ClaimedGameResult> {
   return requestClaimedGame('/api/games', {
     method: 'POST',
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({}),
   });
 }
 
@@ -35,10 +35,10 @@ export async function fetchGameSummary(gameId: string): Promise<GameSummaryResul
   return { game };
 }
 
-export async function claimInviteGame(gameId: string, name: string): Promise<ClaimedGameResult> {
+export async function claimInviteGame(gameId: string): Promise<ClaimedGameResult> {
   return requestClaimedGame(`/api/games/${encodeURIComponent(gameId)}/claim`, {
     method: 'POST',
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({}),
   });
 }
 

@@ -72,6 +72,7 @@ let accountCurrentValue: HTMLSpanElement;
 let accountGames: HTMLDivElement;
 let accountPrimaryButton: HTMLButtonElement;
 let accountSecondaryButton: HTMLButtonElement;
+let accountNameButton: HTMLButtonElement;
 let statusNoticeValue: HTMLElement;
 let historySummary: HTMLSpanElement;
 let historyList: HTMLDivElement;
@@ -138,19 +139,21 @@ const header = document.querySelector('.header') as HTMLDivElement | null;
 
 const accountBar = document.createElement('div');
 accountBar.classList.add('room-bar');
+const accountTop = document.createElement('div');
+accountTop.classList.add('room-bar__top');
 const accountMeta = document.createElement('div');
 accountMeta.classList.add('room-bar__meta');
 const accountIdentity = document.createElement('div');
 accountIdentity.classList.add('room-bar__room');
 const accountLabel = document.createElement('span');
 accountLabel.classList.add('room-bar__label');
-accountLabel.textContent = 'Player';
+accountLabel.textContent = 'Game';
 accountCurrentValue = document.createElement('span');
 accountCurrentValue.classList.add('room-bar__current');
 accountGames = document.createElement('div');
 accountGames.classList.add('room-bar__players');
 const statusNotice = document.createElement('div');
-statusNotice.classList.add('room-player', 'room-player--empty');
+statusNotice.classList.add('room-player', 'room-bar__status');
 const statusNoticeLabel = document.createElement('span');
 statusNoticeLabel.classList.add('room-player__label');
 statusNoticeLabel.textContent = 'Status';
@@ -158,28 +161,49 @@ statusNoticeValue = document.createElement('strong');
 statusNoticeValue.classList.add('room-player__value');
 accountIdentity.append(accountLabel, accountCurrentValue);
 statusNotice.append(statusNoticeLabel, statusNoticeValue);
-accountMeta.append(accountIdentity, statusNotice, accountGames);
+accountMeta.append(accountIdentity, statusNotice);
 const accountControls = document.createElement('div');
-accountControls.classList.add('room-bar__controls');
-accountInput = document.createElement('input');
-accountInput.classList.add('room-input');
-accountInput.type = 'text';
-accountInput.maxLength = PLAYER_NAME_MAX_LENGTH;
-accountInput.autocomplete = 'off';
-accountInput.spellcheck = false;
+accountControls.classList.add('room-bar__controls', 'room-bar__controls--top');
 accountPrimaryButton = document.createElement('button');
 accountPrimaryButton.classList.add('room-button');
 accountPrimaryButton.type = 'button';
 accountSecondaryButton = document.createElement('button');
 accountSecondaryButton.classList.add('room-button', 'room-button--secondary');
 accountSecondaryButton.type = 'button';
+accountControls.append(accountPrimaryButton, accountSecondaryButton);
+accountTop.append(accountMeta, accountControls);
+
+const accountNameRow = document.createElement('div');
+accountNameRow.classList.add('room-bar__name-row');
+const accountNameCopy = document.createElement('div');
+accountNameCopy.classList.add('room-bar__name-copy');
+const accountNameLabel = document.createElement('span');
+accountNameLabel.classList.add('room-bar__label');
+accountNameLabel.textContent = 'Display name';
+const accountNameHint = document.createElement('span');
+accountNameHint.classList.add('room-bar__hint');
+accountNameHint.textContent = 'Cosmetic only in this game';
+accountNameCopy.append(accountNameLabel, accountNameHint);
+
+const accountNameControls = document.createElement('div');
+accountNameControls.classList.add('room-bar__name-controls');
+accountInput = document.createElement('input');
+accountInput.classList.add('room-input');
+accountInput.type = 'text';
+accountInput.maxLength = PLAYER_NAME_MAX_LENGTH;
+accountInput.autocomplete = 'off';
+accountInput.spellcheck = false;
+accountNameButton = document.createElement('button');
+accountNameButton.classList.add('room-button');
+accountNameButton.type = 'button';
 resetButton = document.createElement('button');
 resetButton.classList.add('room-button', 'room-button--reset');
 resetButton.id = 'reset-button';
 resetButton.type = 'button';
 resetButton.textContent = 'Reset';
-accountControls.append(accountInput, accountPrimaryButton, accountSecondaryButton);
-accountBar.append(accountMeta, accountControls);
+accountNameControls.append(accountInput, accountNameButton);
+accountNameRow.append(accountNameCopy, accountNameControls);
+accountBar.append(accountTop, accountGames, accountNameRow);
 app.appendChild(accountBar);
 
 if (header) {
@@ -457,10 +481,18 @@ accountSecondaryButton.addEventListener('click', () => {
   void handleAccountSecondaryAction();
 });
 
+accountNameButton.addEventListener('click', () => {
+  void handleAccountNameAction();
+});
+
+accountInput.addEventListener('input', () => {
+  syncAccountUi();
+});
+
 accountInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') {
     event.preventDefault();
-    void handleAccountPrimaryAction();
+    void handleAccountNameAction();
   }
 });
 
@@ -525,6 +557,9 @@ function syncGameState(state: GameState): void {
   latestGameState = state;
   currentBoardLayout = state.boardLayout;
   currentGameSummary = summaryFromState(state);
+  if (currentGameSummary && shouldRefreshStatusFromState()) {
+    setStatus(selectedGameStatusText(currentGameSummary));
+  }
   if (getClientState().currentGameId !== state.gameId) {
     hydrateClientState({ currentGameId: state.gameId });
   }
@@ -565,6 +600,16 @@ function syncGameState(state: GameState): void {
   updateStatusFromState(state, player, previousState);
   renderAccountGames();
   updateActionButtons();
+}
+
+function shouldRefreshStatusFromState(): boolean {
+  const currentStatus = statusNoticeValue.textContent?.trim() ?? '';
+  return currentStatus.length === 0 || [
+    'Connected. Syncing game state...',
+    'Connection error. Reconnecting.',
+    'Disconnected. Reconnecting.',
+    'Loading game...',
+  ].includes(currentStatus);
 }
 
 function clearCurrentGameState(message: string, clearSelection = false): void {
@@ -888,21 +933,33 @@ function clearMovePreviewMarks(): void {
 }
 
 function syncAccountUi(): void {
-  const { claims, currentClaimToken, currentGameId, defaultPlayerName } = getClientState();
+  const { claims, currentClaimToken, currentGameId } = getClientState();
   const activeClaim = currentStoredClaim();
   const displaySummary = currentDisplayedSummary();
-  const currentName = activeClaim?.playerName ?? defaultPlayerName;
+  const currentName = activeClaim?.playerName ?? '';
   const hasOpenSeat = displaySummary ? displaySummary.players.some((player) => player.id === null) : true;
+  const nameDraft = document.activeElement === accountInput
+    ? accountInput.value.trim()
+    : currentName;
 
-  accountCurrentValue.textContent = currentName || 'Set your name';
+  accountCurrentValue.textContent = currentGameId
+    ? `Game ${shortGameId(currentGameId)}`
+    : 'No game selected';
+  accountCurrentValue.title = displaySummary?.gameId ?? currentGameId ?? '';
   if (document.activeElement !== accountInput) {
-    accountInput.value = currentName;
+    accountInput.value = currentClaimToken ? currentName : '';
   }
-  accountInput.placeholder = 'your name';
+  accountInput.placeholder = currentClaimToken ? 'display name' : 'Claim a seat to set your name';
+  accountInput.disabled = accountRequestInFlight || !currentClaimToken;
+  accountNameButton.textContent = 'Save name';
+  accountNameButton.disabled = accountRequestInFlight
+    || !currentClaimToken
+    || nameDraft.length === 0
+    || nameDraft === currentName;
 
   if (currentGameId) {
-    accountPrimaryButton.textContent = currentClaimToken ? 'Save name' : 'Claim seat';
-    accountSecondaryButton.textContent = 'Copy invite';
+    accountPrimaryButton.textContent = currentClaimToken ? 'Copy invite' : 'Claim seat';
+    accountSecondaryButton.textContent = currentClaimToken ? 'New game' : 'Copy invite';
   } else {
     accountPrimaryButton.textContent = 'Create game';
     accountSecondaryButton.textContent = claims.length > 0 ? 'Latest game' : 'Clear';
@@ -915,8 +972,7 @@ function syncAccountUi(): void {
   );
   accountSecondaryButton.disabled = accountRequestInFlight || (
     currentGameId === null &&
-    claims.length === 0 &&
-    accountInput.value.trim().length === 0
+    claims.length === 0
   );
 
   renderAccountGames();
@@ -1039,13 +1095,13 @@ function summaryFromState(state: GameState): GameSummary {
 }
 
 function selectedGameStatusText(summary: GameSummary): string {
-  const { currentPlayerId, currentClaimToken } = getClientState();
+  const { currentClaimToken } = getClientState();
   const currentPlayers = summary.players.filter((player) => player.id !== null);
-  if (summary.gameEnded) return 'finished';
-  if (currentPlayers.length < 2) return 'waiting for player 2';
-  if (!currentClaimToken) return 'game in progress';
-  if (!socketIsOpen()) return 'reconnecting';
-  return summary.currentPlayerId === currentPlayerId ? 'your turn' : 'their turn';
+  if (summary.gameEnded) return 'Finished';
+  if (currentPlayers.length < 2) return currentClaimToken ? 'Waiting for partner' : 'Open seat available';
+  if (!currentClaimToken) return 'Game in progress';
+  if (!socketIsOpen()) return 'Reconnecting';
+  return 'Connected';
 }
 
 function renderTurnHistory(entries: TurnHistoryEntryState[]): void {
@@ -1213,51 +1269,58 @@ function formatCellPosition(col: number, row: number): string {
 }
 
 async function handleAccountPrimaryAction(): Promise<void> {
-  const inputValue = accountInput.value.trim();
-  if (inputValue.length === 0) {
-    setStatus('Enter your name first.', 'error');
-    return;
-  }
-
   const { currentClaimToken, currentGameId } = getClientState();
   if (!currentGameId) {
-    await createNewGame(inputValue);
+    await createNewGame();
     return;
   }
 
   if (currentClaimToken) {
-    await renameCurrentPlayer(inputValue);
+    await copyInviteLink(currentGameId);
     return;
   }
 
-  await claimCurrentGame(inputValue);
+  await claimCurrentGame();
 }
 
-function handleAccountSecondaryAction(): void {
-  const { claims, currentGameId } = getClientState();
+async function handleAccountSecondaryAction(): Promise<void> {
+  const { claims, currentClaimToken, currentGameId } = getClientState();
   if (currentGameId) {
-    void copyInviteLink(currentGameId);
+    if (currentClaimToken) {
+      await createNewGame();
+      return;
+    }
+    await copyInviteLink(currentGameId);
     return;
   }
 
   if (claims.length > 0) {
-    void openGame(claims[0].gameId);
+    await openGame(claims[0].gameId);
     return;
   }
 
-  accountInput.value = '';
-  setStatus('Set your name to create a shareable game.');
+  setStatus('No recent games yet.');
 }
 
-async function createNewGame(playerNameInput: string): Promise<void> {
+async function handleAccountNameAction(): Promise<void> {
+  const playerNameInput = accountInput.value.trim();
+  if (playerNameInput.length === 0) {
+    setStatus('Enter a display name.', 'error');
+    return;
+  }
+
+  await renameCurrentPlayer(playerNameInput);
+}
+
+async function createNewGame(): Promise<void> {
   accountRequestInFlight = true;
   syncAccountUi();
-  setStatus(`Creating a game for ${playerNameInput}...`);
+  setStatus('Creating a new game...');
 
   try {
-    const result = await createInviteGame(playerNameInput);
+    const result = await createInviteGame();
     setLocationGameId(result.game.gameId);
-    clearCurrentGameState(`Created game ${shortGameId(result.game.gameId)}.`);
+    clearCurrentGameState(`Game ${shortGameId(result.game.gameId)} ready.`);
     rememberClaim(result.claim, result.game);
     currentGameSummary = result.game;
     hydrateClientState({ currentGameId: result.game.gameId });
@@ -1272,18 +1335,19 @@ async function createNewGame(playerNameInput: string): Promise<void> {
   }
 }
 
-async function claimCurrentGame(playerNameInput: string): Promise<void> {
+async function claimCurrentGame(): Promise<void> {
   const { currentGameId } = getClientState();
   if (!currentGameId) return;
 
   accountRequestInFlight = true;
   syncAccountUi();
-  setStatus(`Claiming a seat in game ${shortGameId(currentGameId)}...`);
+  setStatus('Claiming the open seat...');
 
   try {
-    const result = await claimInviteGame(currentGameId, playerNameInput);
+    const result = await claimInviteGame(currentGameId);
     rememberClaim(result.claim, result.game);
     currentGameSummary = result.game;
+    setStatus('Seat claimed.');
     syncAccountUi();
     ensureGameSocket(true);
   } catch (error) {
@@ -1301,12 +1365,13 @@ async function renameCurrentPlayer(playerNameInput: string): Promise<void> {
 
   accountRequestInFlight = true;
   syncAccountUi();
-  setStatus(`Saving your name as ${playerNameInput}...`);
+  setStatus('Saving display name...');
 
   try {
     const result = await renameClaimedPlayer(currentGameId, currentClaimToken, playerNameInput);
     rememberClaim(result.claim, result.game);
     currentGameSummary = result.game;
+    setStatus('Display name saved.');
     syncAccountUi();
     if (latestGameState) {
       syncGameState(latestGameState);
@@ -1328,7 +1393,7 @@ async function openGame(gameId: string): Promise<void> {
     currentPlayerId: activeClaim?.playerId ?? null,
   });
   setLocationGameId(gameId);
-  clearCurrentGameState(`Loading game ${shortGameId(gameId)}.`);
+  clearCurrentGameState('Loading game...');
   if (!activeClaim) {
     disconnectSocket();
   }
@@ -1437,6 +1502,7 @@ async function copyInviteLink(gameId: string): Promise<void> {
 
 function setStatus(message: string, tone: 'normal' | 'error' = 'normal'): void {
   statusNoticeValue.textContent = message;
+  statusNoticeValue.setAttribute('title', message);
   if (statusScoreCard) {
     if (tone === 'error') {
       flashElement(statusScoreCard, 'status-score--shake');
@@ -1601,7 +1667,7 @@ function ensureGameSocket(forceReconnect = false): void {
   socket.addEventListener('open', () => {
     if (generation !== socketGeneration) return;
     reconnectAttempts = 0;
-    setStatus(`Connected to game ${shortGameId(target.gameId)}. Waiting for game state.`);
+    setStatus('Connected. Syncing game state...');
     updateActionButtons();
   });
 

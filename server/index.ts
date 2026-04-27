@@ -88,18 +88,19 @@ export class GameRoom {
   }
 
   claimSeat(
-    name: string,
+    name: string | null = null,
     seat: number | null = null,
     claimToken: string = randomUUID(),
     socket: LiveSocket | null = null,
   ): Player | null {
     const nextSeat = seat ?? this.firstOpenSeat();
     if (nextSeat === null || this.playerForSeat(nextSeat)) return null;
+    const resolvedName = normalizePlayerName(name ?? '') ?? defaultSeatName(nextSeat);
 
     const player: Player = {
       id: randomUUID(),
       claimToken,
-      name,
+      name: resolvedName,
       seat: nextSeat,
       socket,
       rack: [],
@@ -561,7 +562,7 @@ function getGame(gameId: string): GameRoom | null {
   return rooms.get(normalizedGameId) ?? null;
 }
 
-function createGame(name: string): { game: GameRoom; player: Player } {
+function createGame(name: string | null = null): { game: GameRoom; player: Player } {
   const game = new GameRoom(randomUUID(), persistGames);
   const player = game.claimSeat(name, 1, randomUUID(), null);
   if (!player) {
@@ -915,11 +916,7 @@ function handleHttpRequest(request: IncomingMessage, response: ServerResponse): 
 
 async function handleCreateGame(request: IncomingMessage, response: ServerResponse): Promise<void> {
   const body = await readJsonBody(request);
-  const name = normalizePlayerName(typeof body.name === 'string' ? body.name : '');
-  if (!name) {
-    sendJson(response, 400, { msg: 'Names must be 1-24 characters and use letters, numbers, spaces, apostrophes, periods, underscores, or dashes.' });
-    return;
-  }
+  const name = typeof body.name === 'string' ? body.name : null;
 
   const { game, player } = createGame(name);
   sendJson(response, 200, {
@@ -953,11 +950,7 @@ async function handleClaimGame(request: IncomingMessage, response: ServerRespons
   }
 
   const body = await readJsonBody(request);
-  const name = normalizePlayerName(typeof body.name === 'string' ? body.name : '');
-  if (!name) {
-    sendJson(response, 400, { msg: 'Names must be 1-24 characters and use letters, numbers, spaces, apostrophes, periods, underscores, or dashes.' });
-    return;
-  }
+  const name = typeof body.name === 'string' ? body.name : null;
 
   const player = game.claimSeat(name);
   if (!player) {
@@ -1084,6 +1077,10 @@ function normalizePlayerName(name: string): string | null {
   const trimmedName = name.trim();
   if (!/^[A-Za-z0-9 _.'-]{1,24}$/.test(trimmedName)) return null;
   return trimmedName;
+}
+
+function defaultSeatName(seat: number): string {
+  return `Player ${seat}`;
 }
 
 function buildClaimResponse(gameId: string, player: Player): {
