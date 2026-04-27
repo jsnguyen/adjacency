@@ -39,6 +39,8 @@ export type GameSummaryState = {
   players: GameSummaryPlayerState[];
   currentPlayerId: string | null;
   gameEnded: boolean;
+  singlePlayer: boolean;
+  canChangeSinglePlayer: boolean;
   teamScore: number;
   updatedAt: string;
 };
@@ -122,6 +124,8 @@ export type GameState = {
   currentPlayerId: string | null;
   gameEnded: boolean;
   finalTurnsRemaining: number | null;
+  singlePlayer: boolean;
+  canChangeSinglePlayer: boolean;
   boardLayout: BoardLayoutType;
   canChangeBoardLayout: boolean;
   teamScore: number;

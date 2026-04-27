@@ -24,6 +24,7 @@ export type PersistedGameState = {
   bag: Letter[];
   gameEnded: boolean;
   finalTurnsRemaining: number | null;
+  singlePlayer: boolean;
   boardLayout: BoardLayoutType;
   nextTileNumber: number;
   teamScore: number;
@@ -58,6 +59,7 @@ class AdjacencyDatabase {
         bag_json TEXT NOT NULL,
         game_ended INTEGER NOT NULL,
         final_turns_remaining INTEGER,
+        single_player INTEGER NOT NULL DEFAULT 0,
         board_layout TEXT NOT NULL,
         next_tile_number INTEGER NOT NULL,
         team_score INTEGER NOT NULL,
@@ -92,6 +94,14 @@ class AdjacencyDatabase {
         PRIMARY KEY (game_id, turn_number)
       );
     `);
+
+    try {
+      this.db.exec('ALTER TABLE games ADD COLUMN single_player INTEGER NOT NULL DEFAULT 0;');
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes('duplicate column name')) {
+        throw error;
+      }
+    }
   }
 
   saveGames(games: PersistedGameState[]): void {
@@ -111,6 +121,7 @@ class AdjacencyDatabase {
             bag_json,
             game_ended,
             final_turns_remaining,
+            single_player,
             board_layout,
             next_tile_number,
             team_score,
@@ -118,7 +129,7 @@ class AdjacencyDatabase {
             next_turn_number,
             created_at,
             updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           game.id,
           JSON.stringify(game.board),
@@ -127,6 +138,7 @@ class AdjacencyDatabase {
           JSON.stringify(game.bag),
           game.gameEnded ? 1 : 0,
           game.finalTurnsRemaining,
+          game.singlePlayer ? 1 : 0,
           game.boardLayout,
           game.nextTileNumber,
           game.teamScore,
@@ -200,6 +212,7 @@ class AdjacencyDatabase {
         bag_json,
         game_ended,
         final_turns_remaining,
+        single_player,
         board_layout,
         next_tile_number,
         team_score,
@@ -217,6 +230,7 @@ class AdjacencyDatabase {
       bag_json: string;
       game_ended: number;
       final_turns_remaining: number | null;
+      single_player: number;
       board_layout: BoardLayoutType;
       next_tile_number: number;
       team_score: number;
@@ -271,6 +285,7 @@ class AdjacencyDatabase {
       bag: JSON.parse(row.bag_json) as Letter[],
       gameEnded: Boolean(row.game_ended),
       finalTurnsRemaining: row.final_turns_remaining,
+      singlePlayer: Boolean(row.single_player),
       boardLayout: row.board_layout,
       nextTileNumber: row.next_tile_number,
       teamScore: row.team_score,

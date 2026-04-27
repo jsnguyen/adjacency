@@ -42,7 +42,12 @@ const dictionary = loadDictionary();
 const server = createServer(handleHttpRequest);
 const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
 const rooms = new Map<string, GameRoom>();
-const socketAssignments = new Map<WebSocket, { room: GameRoom; playerId: string }>();
+type SocketAssignment = {
+  room: GameRoom;
+  playerId: string | null;
+};
+
+const socketAssignments = new Map<WebSocket, SocketAssignment>();
 const heartbeatIntervalMs = 30_000;
 const isMainModule = process.argv[1]
   ? import.meta.url === pathToFileURL(process.argv[1]).href
@@ -71,6 +76,7 @@ export class GameRoom {
   private bag: Letter[];
   private gameEnded = false;
   private finalTurnsRemaining: number | null = null;
+  private singlePlayer = false;
   private boardLayout: BoardLayoutType = 'scrabble';
   private nextTileNumber = 1;
   private teamScore = 0;
@@ -93,7 +99,9 @@ export class GameRoom {
     claimToken: string = randomUUID(),
     socket: LiveSocket | null = null,
   ): Player | null {
+    if (this.singlePlayer && this.players.size >= 1) return null;
     const nextSeat = seat ?? this.firstOpenSeat();
+    if (nextSeat !== 1 && nextSeat !== 2) return null;
     if (nextSeat === null || this.playerForSeat(nextSeat)) return null;
     const resolvedName = normalizePlayerName(name ?? '') ?? defaultSeatName(nextSeat);
 
@@ -145,7 +153,11 @@ export class GameRoom {
   }
 
   hasOpenSeat(): boolean {
-    return this.players.size < 2;
+    return !this.singlePlayer && this.players.size < 2;
+  }
+
+  isSinglePlayer(): boolean {
+    return this.singlePlayer;
   }
 
   private playerForSeat(seat: number): Player | undefined {
@@ -173,7 +185,7 @@ export class GameRoom {
     const player = this.players.get(playerId);
     if (!player) return 'Unknown player.';
     if (this.gameEnded) return 'Game is over.';
-    if (this.players.size < 2) return 'Waiting for another player to claim the open seat.';
+    if (!this.isReadyToPlay()) return 'Waiting for another player to claim the open seat.';
     if (this.currentPlayerId() !== playerId) return 'It is not your turn.';
 
     const result = validateMove(this.board, player.rack, boardState, dictionary.words, this.boardLayout);
@@ -218,7 +230,7 @@ export class GameRoom {
     if (this.gameEnded) {
       return { valid: false, words: [], totalScore: 0, reason: 'Game is over.' };
     }
-    if (this.players.size < 2) {
+    if (!this.isReadyToPlay()) {
       return { valid: false, words: [], totalScore: 0, reason: 'Waiting for another player to claim the open seat.' };
     }
     if (this.currentPlayerId() !== playerId) {
@@ -253,7 +265,7 @@ export class GameRoom {
   passTurn(playerId: string): string | null {
     if (!this.players.has(playerId)) return 'Unknown player.';
     if (this.gameEnded) return 'Game is over.';
-    if (this.players.size < 2) return 'Waiting for another player to claim the open seat.';
+    if (!this.isReadyToPlay()) return 'Waiting for another player to claim the open seat.';
     if (this.currentPlayerId() !== playerId) return 'It is not your turn.';
 
     this.lastMove = {
@@ -280,7 +292,7 @@ export class GameRoom {
     const player = this.players.get(playerId);
     if (!player) return 'Unknown player.';
     if (this.gameEnded) return 'Game is over.';
-    if (this.players.size < 2) return 'Waiting for another player to claim the open seat.';
+    if (!this.isReadyToPlay()) return 'Waiting for another player to claim the open seat.';
     if (this.currentPlayerId() !== playerId) return 'It is not your turn.';
 
     const uniqueTileIds = [...new Set(tileIds)];
@@ -328,6 +340,20 @@ export class GameRoom {
     return null;
   }
 
+  setSinglePlayer(playerId: string, enabled: boolean): string | null {
+    if (!this.players.has(playerId)) return 'Unknown player.';
+    if (enabled && this.players.size > 1) {
+      return 'Single-player mode can only be enabled before a partner joins.';
+    }
+    if (!this.canChangeSinglePlayer()) {
+      return 'Single-player mode can only change before the first turn.';
+    }
+    if (this.singlePlayer === enabled) return null;
+    this.singlePlayer = enabled;
+    this.markChanged();
+    return null;
+  }
+
   resetGame(playerId: string): { ok: true } | { ok: false; reason: string } {
     const resetPlayer = this.players.get(playerId);
     if (!resetPlayer) return { ok: false, reason: 'Unknown player.' };
@@ -359,10 +385,7 @@ export class GameRoom {
   }
 
   broadcastState(): void {
-    const state = this.snapshot();
-    for (const player of this.players.values()) {
-      send(player.socket, { type: 'game_state', state });
-    }
+    broadcastRoomState(this);
   }
 
   private currentPlayerId(): string | null {
@@ -404,8 +427,10 @@ export class GameRoom {
         seat: index + 1,
         connected: player?.connected ?? false,
       })),
-      currentPlayerId: this.players.size < 2 ? null : this.currentPlayerId(),
+      currentPlayerId: this.isReadyToPlay() ? this.currentPlayerId() : null,
       gameEnded: this.gameEnded,
+      singlePlayer: this.singlePlayer,
+      canChangeSinglePlayer: this.canChangeSinglePlayer(),
       teamScore: this.teamScore,
       updatedAt: this.updatedAt,
     };
@@ -430,9 +455,11 @@ export class GameRoom {
             tiles: [...player.rack].sort(sortTiles),
           },
         })),
-      currentPlayerId: this.players.size < 2 ? null : this.currentPlayerId(),
+      currentPlayerId: this.isReadyToPlay() ? this.currentPlayerId() : null,
       gameEnded: this.gameEnded,
       finalTurnsRemaining: this.finalTurnsRemaining,
+      singlePlayer: this.singlePlayer,
+      canChangeSinglePlayer: this.canChangeSinglePlayer(),
       boardLayout: this.boardLayout,
       canChangeBoardLayout: this.canChangeBoardLayout(),
       teamScore: this.teamScore,
@@ -458,6 +485,7 @@ export class GameRoom {
       bag: [...this.bag],
       gameEnded: this.gameEnded,
       finalTurnsRemaining: this.finalTurnsRemaining,
+      singlePlayer: this.singlePlayer,
       boardLayout: this.boardLayout,
       nextTileNumber: this.nextTileNumber,
       teamScore: this.teamScore,
@@ -474,9 +502,13 @@ export class GameRoom {
     onChange: (() => void) | null = null,
   ): GameRoom {
     const room = new GameRoom(state.id, onChange);
-    room.board = new Map(state.board.map((tile) => [coordKey(tile.col, tile.row), tile]));
+    const persistedBoard = Array.isArray(state.board) ? state.board : [];
+    const persistedPlayers = Array.isArray(state.players) ? state.players : [];
+    const persistedTurnOrder = Array.isArray(state.turnOrder) ? state.turnOrder : [];
+
+    room.board = new Map(persistedBoard.map((tile) => [coordKey(tile.col, tile.row), tile]));
     room.players = new Map(
-      state.players.map((player) => [player.id, {
+      persistedPlayers.map((player) => [player.id, {
         id: player.id,
         claimToken: player.claimToken,
         name: player.name,
@@ -486,24 +518,33 @@ export class GameRoom {
         connected: false,
       }]),
     );
-    room.turnOrder = state.turnOrder.filter((playerId) => room.players.has(playerId));
+    room.turnOrder = persistedTurnOrder.filter((playerId) => room.players.has(playerId));
     if (room.turnOrder.length === 0) {
-      room.turnOrder = [...room.players.keys()];
+      room.turnOrder = [...room.players.values()]
+        .sort((left, right) => left.seat - right.seat)
+        .map((player) => player.id);
     }
+    const persistedTurnIndex = Number.isInteger(state.currentTurnIndex)
+      ? Number(state.currentTurnIndex)
+      : 0;
     room.currentTurnIndex = room.turnOrder.length === 0
       ? 0
-      : Math.max(0, Math.min(room.turnOrder.length - 1, state.currentTurnIndex));
-    room.bag = [...state.bag];
+      : Math.max(0, Math.min(room.turnOrder.length - 1, persistedTurnIndex));
+    room.bag = Array.isArray(state.bag) ? [...state.bag] : [];
     room.gameEnded = state.gameEnded ?? false;
     room.finalTurnsRemaining = state.finalTurnsRemaining ?? null;
-    room.boardLayout = state.boardLayout ?? 'scrabble';
-    room.nextTileNumber = state.nextTileNumber;
-    room.teamScore = state.teamScore;
-    room.lastMove = state.lastMove;
-    room.turnHistory = [...state.turnHistory];
-    room.nextTurnNumber = state.nextTurnNumber;
-    room.createdAt = state.createdAt;
-    room.updatedAt = state.updatedAt;
+    room.singlePlayer = state.singlePlayer ?? false;
+    room.boardLayout = isBoardLayoutType(state.boardLayout) ? state.boardLayout : 'scrabble';
+    room.nextTileNumber = normalizePositiveInteger(state.nextTileNumber, inferNextTileNumber(room));
+    room.teamScore = Number.isFinite(state.teamScore) ? state.teamScore : 0;
+    room.lastMove = state.lastMove ?? null;
+    room.turnHistory = Array.isArray(state.turnHistory) ? [...state.turnHistory] : [];
+    room.nextTurnNumber = normalizePositiveInteger(
+      state.nextTurnNumber,
+      inferNextTurnNumber(room.turnHistory),
+    );
+    room.createdAt = typeof state.createdAt === 'string' ? state.createdAt : new Date().toISOString();
+    room.updatedAt = typeof state.updatedAt === 'string' ? state.updatedAt : room.createdAt;
     return room;
   }
 
@@ -554,6 +595,14 @@ export class GameRoom {
   private canChangeBoardLayout(): boolean {
     return this.board.size === 0 && this.turnHistory.every((entry) => entry.kind === 'reset');
   }
+
+  private canChangeSinglePlayer(): boolean {
+    return this.board.size === 0 && this.turnHistory.every((entry) => entry.kind === 'reset') && this.players.size <= 1;
+  }
+
+  private isReadyToPlay(): boolean {
+    return this.singlePlayer || this.players.size >= 2;
+  }
 }
 
 function getGame(gameId: string): GameRoom | null {
@@ -573,18 +622,20 @@ function createGame(name: string | null = null): { game: GameRoom; player: Playe
   return { game, player };
 }
 
-function attachSocketToGame(socket: LiveSocket, claimToken: string, gameId: string): void {
-  const normalizedClaimToken = claimToken.trim();
-  if (normalizedClaimToken.length === 0) {
-    send(socket, { type: 'error', msg: 'Missing claim token.' });
-    socket.close(1008, 'Missing claim token.');
-    return;
-  }
-
+function attachSocketToGame(socket: LiveSocket, claimToken: string | null, gameId: string): void {
   const game = getGame(gameId);
   if (!game) {
     send(socket, { type: 'error', msg: 'Game not found.' });
     socket.close(1008, 'Unknown game.');
+    return;
+  }
+
+  leaveAssignedGame(socket);
+
+  const normalizedClaimToken = claimToken?.trim() ?? '';
+  if (normalizedClaimToken.length === 0) {
+    socketAssignments.set(socket, { room: game, playerId: null });
+    game.sendState(socket);
     return;
   }
 
@@ -595,7 +646,6 @@ function attachSocketToGame(socket: LiveSocket, claimToken: string, gameId: stri
     return;
   }
 
-  leaveAssignedGame(socket);
   socketAssignments.set(socket, { room: game, playerId: player.id });
   game.broadcastState();
 }
@@ -605,12 +655,22 @@ function leaveAssignedGame(socket: WebSocket): void {
   if (!assignment) return;
 
   socketAssignments.delete(socket);
-  assignment.room.disconnectPlayer(assignment.playerId);
+  if (assignment.playerId) {
+    assignment.room.disconnectPlayer(assignment.playerId);
+  }
 }
 
 function send(socket: WebSocket | null | undefined, msg: ServerMessage): void {
   if (socket && socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify(msg));
+  }
+}
+
+function broadcastRoomState(room: GameRoom): void {
+  const state = room.snapshot();
+  for (const [socket, assignment] of socketAssignments.entries()) {
+    if (assignment.room !== room) continue;
+    send(socket, { type: 'game_state', state });
   }
 }
 
@@ -626,6 +686,11 @@ function handleMessage(socket: LiveSocket, msg: ClientMessage): void {
   }
 
   const { room, playerId } = assignment;
+  if (!playerId) {
+    rejectTurn(socket, 'Spectators cannot play.');
+    return;
+  }
+
   switch (msg.type) {
     case 'play_turn': {
       const reason = room.playTurn(playerId, msg.boardState, msg.handState);
@@ -671,6 +736,15 @@ function handleMessage(socket: LiveSocket, msg: ClientMessage): void {
       }
       break;
     }
+    case 'set_single_player': {
+      const reason = room.setSinglePlayer(playerId, msg.enabled);
+      if (reason) {
+        rejectTurn(socket, reason);
+      } else {
+        room.broadcastState();
+      }
+      break;
+    }
     case 'reset_game': {
       const result = room.resetGame(playerId);
       if (!result.ok) {
@@ -707,6 +781,27 @@ function shuffleInPlace<T>(items: T[]): T[] {
 
 function sortTiles(a: LetterTileState, b: LetterTileState): number {
   return a.row - b.row || a.col - b.col || a.id.localeCompare(b.id);
+}
+
+function normalizePositiveInteger(value: unknown, fallback: number): number {
+  return Number.isInteger(value) && Number(value) > 0 ? Number(value) : fallback;
+}
+
+function inferNextTileNumber(room: GameRoom): number {
+  const tileIds = [
+    ...room.snapshot().board.tiles,
+    ...room.snapshot().players.flatMap((player) => player.rack.tiles),
+  ].map((tile) => tile.id);
+  const maxTileNumber = tileIds.reduce((max, tileId) => {
+    const match = /^tile-(\d+)$/.exec(tileId);
+    return match ? Math.max(max, Number(match[1])) : max;
+  }, 0);
+  return maxTileNumber + 1;
+}
+
+function inferNextTurnNumber(turnHistory: TurnHistoryEntryState[]): number {
+  const maxTurnNumber = turnHistory.reduce((max, entry) => Math.max(max, entry.turn), 0);
+  return maxTurnNumber + 1;
 }
 
 function validateSubmittedRack(
@@ -772,9 +867,9 @@ wss.on('connection', (socket: WebSocket, request: IncomingMessage) => {
   const requestUrl = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
   const requestedGameId = requestUrl.searchParams.get('game');
   const requestedClaimToken = requestUrl.searchParams.get('claim');
-  if (!requestedGameId || !requestedClaimToken) {
-    send(liveSocket, { type: 'error', msg: 'Missing game or claim token.' });
-    liveSocket.close(1008, 'Missing game or claim token.');
+  if (!requestedGameId) {
+    send(liveSocket, { type: 'error', msg: 'Missing game id.' });
+    liveSocket.close(1008, 'Missing game id.');
     return;
   }
   attachSocketToGame(liveSocket, requestedClaimToken, requestedGameId);
@@ -941,6 +1036,11 @@ async function handleClaimGame(request: IncomingMessage, response: ServerRespons
   const game = getGame(gameId);
   if (!game) {
     sendJson(response, 404, { msg: 'Game not found.' });
+    return;
+  }
+
+  if (game.isSinglePlayer()) {
+    sendJson(response, 409, { msg: 'Single-player mode is enabled for this game.' });
     return;
   }
 
@@ -1130,6 +1230,8 @@ function isClientMessage(value: unknown): value is ClientMessage {
       );
     case 'set_board_layout':
       return isBoardLayoutType(value.layout);
+    case 'set_single_player':
+      return typeof value.enabled === 'boolean';
     case 'reset_game':
       return true;
     default:

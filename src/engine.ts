@@ -13,14 +13,16 @@ import { Actions } from './actions.ts'
 import { Board } from './board.ts'
 import { createBoardZoomController } from './boardZoom.ts'
 import {
-  claimForGame,
   readClaimStore,
   removeStoredClaim,
-  setDefaultPlayerName,
   upsertStoredClaim,
   type StoredClaim,
 } from './claimStore.ts'
 import { gridCoordsToTileHolderCoords } from './coordinates.ts'
+import {
+  readPreferredDisplayName,
+  writePreferredDisplayName,
+} from './displayNameCookie.ts'
 import {
   claimInviteGame,
   createInviteGame,
@@ -41,9 +43,7 @@ import { Tile } from './tile.ts'
 import { makeDraggable } from './draggable.ts'
 import {
   clearCurrentPlayerId,
-  getCurrentPlayerId,
   getClientState,
-  hasCurrentPlayerId,
   hydrateClientState,
   setCurrentPlayerId,
 } from './clientState.ts'
@@ -67,17 +67,14 @@ let statusScoreCard: HTMLDivElement;
 let statusScoreValue: HTMLDivElement;
 let statusScoreMeta: HTMLDivElement;
 let statusScoreDelta: HTMLDivElement;
-let accountInput: HTMLInputElement;
 let accountCurrentValue: HTMLSpanElement;
 let accountGames: HTMLDivElement;
-let accountPrimaryButton: HTMLButtonElement;
-let accountSecondaryButton: HTMLButtonElement;
-let accountNameButton: HTMLButtonElement;
 let statusNoticeValue: HTMLElement;
 let historySummary: HTMLSpanElement;
 let historyList: HTMLDivElement;
 let previewLayer: HTMLDivElement;
 let optionsButton: HTMLButtonElement | null = null;
+let headerCopyInviteButton: HTMLButtonElement | null = null;
 let optionsMenu!: HTMLDivElement;
 let gameOverPrompt: HTMLDivElement | null = null;
 let playButton: HTMLButtonElement | null = null;
@@ -85,19 +82,19 @@ let passButton: HTMLButtonElement | null = null;
 let exchangeButton: HTMLButtonElement | null = null;
 let shuffleButton: HTMLButtonElement | null = null;
 let recallButton: HTMLButtonElement | null = null;
-let resetButton: HTMLButtonElement | null = null;
+let newGameMenuButton!: HTMLButtonElement;
+let changeDisplayNameMenuButton!: HTMLButtonElement;
+let singlePlayerMenuButton!: HTMLButtonElement;
 let scrabbleLayoutButton!: HTMLButtonElement;
 let wordsWithFriendsLayoutButton!: HTMLButtonElement;
 let nytCrossplayLayoutButton!: HTMLButtonElement;
 let selectedExchangeIds = new Set<string>();
 let currentBoardLayout: BoardLayoutType = 'scrabble';
 const boardBackgroundTiles: Tile[] = [];
-let confirmModal: HTMLDivElement;
-let confirmTitle: HTMLHeadingElement;
-let confirmBody: HTMLParagraphElement;
-let confirmConfirmButton: HTMLButtonElement;
-let confirmCancelButton: HTMLButtonElement;
-let pendingConfirmAction: (() => void) | null = null;
+let nameModal: HTMLDivElement;
+let nameModalInput: HTMLInputElement;
+let nameModalSaveButton: HTMLButtonElement;
+let nameModalCancelButton: HTMLButtonElement;
 let previewTimerId: number | null = null;
 let latestPreviewRequestId = 0;
 let scoreAnimationFrameId: number | null = null;
@@ -122,13 +119,19 @@ const app = appRoot as HTMLDivElement;
 app.style.width = `min(calc(100vw - 28px), ${APP_SHELL_WIDTH})`;
 const initialStore = readClaimStore();
 const initialGameId = currentGameIdFromLocation();
-const initialClaim = claimForGame(initialGameId);
+const initialClaim = findStoredClaim(initialStore.claims, initialGameId);
+if (
+  readPreferredDisplayName().length === 0 &&
+  initialClaim &&
+  !isDefaultSeatName(initialClaim.playerName, initialClaim.seat)
+) {
+  writePreferredDisplayName(initialClaim.playerName);
+}
 hydrateClientState({
   claims: initialStore.claims,
   currentClaimToken: initialClaim?.claimToken ?? null,
   currentGameId: initialGameId,
   currentPlayerId: initialClaim?.playerId ?? null,
-  defaultPlayerName: initialStore.defaultPlayerName,
 });
 
 const headerContainer = document.querySelector('.container') as HTMLDivElement | null;
@@ -153,62 +156,26 @@ accountCurrentValue.classList.add('room-bar__current');
 accountGames = document.createElement('div');
 accountGames.classList.add('room-bar__players');
 const statusNotice = document.createElement('div');
-statusNotice.classList.add('room-player', 'room-bar__status');
+statusNotice.classList.add('room-bar__status');
 const statusNoticeLabel = document.createElement('span');
-statusNoticeLabel.classList.add('room-player__label');
+statusNoticeLabel.classList.add('room-bar__status-label');
 statusNoticeLabel.textContent = 'Status';
 statusNoticeValue = document.createElement('strong');
-statusNoticeValue.classList.add('room-player__value');
+statusNoticeValue.classList.add('room-bar__status-value');
 accountIdentity.append(accountLabel, accountCurrentValue);
 statusNotice.append(statusNoticeLabel, statusNoticeValue);
 accountMeta.append(accountIdentity, statusNotice);
-const accountControls = document.createElement('div');
-accountControls.classList.add('room-bar__controls', 'room-bar__controls--top');
-accountPrimaryButton = document.createElement('button');
-accountPrimaryButton.classList.add('room-button');
-accountPrimaryButton.type = 'button';
-accountSecondaryButton = document.createElement('button');
-accountSecondaryButton.classList.add('room-button', 'room-button--secondary');
-accountSecondaryButton.type = 'button';
-accountControls.append(accountPrimaryButton, accountSecondaryButton);
-accountTop.append(accountMeta, accountControls);
-
-const accountNameRow = document.createElement('div');
-accountNameRow.classList.add('room-bar__name-row');
-const accountNameCopy = document.createElement('div');
-accountNameCopy.classList.add('room-bar__name-copy');
-const accountNameLabel = document.createElement('span');
-accountNameLabel.classList.add('room-bar__label');
-accountNameLabel.textContent = 'Display name';
-const accountNameHint = document.createElement('span');
-accountNameHint.classList.add('room-bar__hint');
-accountNameHint.textContent = 'Cosmetic only in this game';
-accountNameCopy.append(accountNameLabel, accountNameHint);
-
-const accountNameControls = document.createElement('div');
-accountNameControls.classList.add('room-bar__name-controls');
-accountInput = document.createElement('input');
-accountInput.classList.add('room-input');
-accountInput.type = 'text';
-accountInput.maxLength = PLAYER_NAME_MAX_LENGTH;
-accountInput.autocomplete = 'off';
-accountInput.spellcheck = false;
-accountNameButton = document.createElement('button');
-accountNameButton.classList.add('room-button');
-accountNameButton.type = 'button';
-resetButton = document.createElement('button');
-resetButton.classList.add('room-button', 'room-button--reset');
-resetButton.id = 'reset-button';
-resetButton.type = 'button';
-resetButton.textContent = 'Reset';
-accountNameControls.append(accountInput, accountNameButton);
-accountNameRow.append(accountNameCopy, accountNameControls);
-accountBar.append(accountTop, accountGames, accountNameRow);
+accountTop.append(accountMeta);
+accountBar.append(accountTop, accountGames);
 app.appendChild(accountBar);
 
 if (header) {
   const headerActions = document.createElement('div');
   headerActions.classList.add('header-actions');
+  headerCopyInviteButton = document.createElement('button');
+  headerCopyInviteButton.classList.add('room-button', 'room-button--secondary', 'header-copy-button');
+  headerCopyInviteButton.type = 'button';
+  headerCopyInviteButton.textContent = 'Copy invite';
   optionsButton = document.createElement('button');
   optionsButton.classList.add('room-button', 'header-options-button');
   optionsButton.type = 'button';
@@ -229,38 +196,70 @@ if (header) {
   layoutButtons.classList.add('options-menu__layout-buttons');
 
   scrabbleLayoutButton = document.createElement('button');
-  scrabbleLayoutButton.classList.add('options-layout-button');
+  scrabbleLayoutButton.classList.add('options-menu__button', 'options-menu__button--choice', 'options-layout-button');
   scrabbleLayoutButton.type = 'button';
   scrabbleLayoutButton.textContent = 'Scrabble-like';
 
   wordsWithFriendsLayoutButton = document.createElement('button');
-  wordsWithFriendsLayoutButton.classList.add('options-layout-button');
+  wordsWithFriendsLayoutButton.classList.add('options-menu__button', 'options-menu__button--choice', 'options-layout-button');
   wordsWithFriendsLayoutButton.type = 'button';
   wordsWithFriendsLayoutButton.textContent = 'WWF-like';
 
   nytCrossplayLayoutButton = document.createElement('button');
-  nytCrossplayLayoutButton.classList.add('options-layout-button');
+  nytCrossplayLayoutButton.classList.add('options-menu__button', 'options-menu__button--choice', 'options-layout-button');
   nytCrossplayLayoutButton.type = 'button';
   nytCrossplayLayoutButton.textContent = 'NYT crossplay-like';
 
   layoutButtons.append(scrabbleLayoutButton, wordsWithFriendsLayoutButton, nytCrossplayLayoutButton);
   layoutSection.append(layoutLabel, layoutButtons);
 
-  const actionsSection = document.createElement('div');
-  actionsSection.classList.add('options-menu__section', 'options-menu__section--actions');
-  actionsSection.appendChild(resetButton);
+  const modeSection = document.createElement('div');
+  modeSection.classList.add('options-menu__section');
 
-  optionsMenu.append(layoutSection, actionsSection);
+  const modeLabel = document.createElement('div');
+  modeLabel.classList.add('options-menu__label');
+  modeLabel.textContent = 'Players';
+
+  singlePlayerMenuButton = document.createElement('button');
+  singlePlayerMenuButton.classList.add('options-menu__button', 'options-menu__button--choice', 'options-layout-button');
+  singlePlayerMenuButton.type = 'button';
+  singlePlayerMenuButton.textContent = 'Single-player';
+
+  modeSection.append(modeLabel, singlePlayerMenuButton);
+
+  const profileSection = document.createElement('div');
+  profileSection.classList.add('options-menu__section');
+  const profileLabel = document.createElement('div');
+  profileLabel.classList.add('options-menu__label');
+  profileLabel.textContent = 'Profile';
+  changeDisplayNameMenuButton = document.createElement('button');
+  changeDisplayNameMenuButton.classList.add('options-menu__button');
+  changeDisplayNameMenuButton.type = 'button';
+  changeDisplayNameMenuButton.textContent = 'Change display name';
+  profileSection.append(profileLabel, changeDisplayNameMenuButton);
+
+  const gameSection = document.createElement('div');
+  gameSection.classList.add('options-menu__section');
+  const gameLabel = document.createElement('div');
+  gameLabel.classList.add('options-menu__label');
+  gameLabel.textContent = 'Game';
+  newGameMenuButton = document.createElement('button');
+  newGameMenuButton.classList.add('options-menu__button');
+  newGameMenuButton.type = 'button';
+  newGameMenuButton.textContent = 'New game';
+  gameSection.append(gameLabel, newGameMenuButton);
+
+  optionsMenu.append(layoutSection, modeSection, profileSection, gameSection);
   gameOverPrompt = document.createElement('div');
   gameOverPrompt.classList.add('game-over-prompt');
   gameOverPrompt.hidden = true;
   gameOverPrompt.setAttribute('aria-hidden', 'true');
   gameOverPrompt.innerHTML = `
     <span class="game-over-prompt__arrow">↑</span>
-    <span class="game-over-prompt__text">Reset to play again</span>
+    <span class="game-over-prompt__text">New game to play again</span>
   `;
 
-  headerActions.append(optionsButton, optionsMenu, gameOverPrompt);
+  headerActions.append(headerCopyInviteButton, optionsButton, optionsMenu, gameOverPrompt);
   header.appendChild(headerActions);
 }
 
@@ -358,24 +357,26 @@ if ('ResizeObserver' in window) {
 window.addEventListener('resize', syncHistoryPanelHeight);
 window.requestAnimationFrame(syncHistoryPanelHeight);
 
-confirmModal = document.createElement('div');
-confirmModal.classList.add('modal-backdrop');
-confirmModal.hidden = true;
-confirmModal.innerHTML = `
-  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
-    <h2 id="confirm-title"></h2>
-    <p id="confirm-body"></p>
+nameModal = document.createElement('div');
+nameModal.classList.add('modal-backdrop');
+nameModal.hidden = true;
+nameModal.innerHTML = `
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="name-modal-title">
+    <h2 id="name-modal-title">Set display name</h2>
+    <p>This name is shown in your games and reused for future games on this device.</p>
+    <div class="modal-form">
+      <input type="text" id="name-modal-input" class="room-input modal-input" maxlength="${PLAYER_NAME_MAX_LENGTH}" autocomplete="off" spellcheck="false">
+    </div>
     <div class="modal-actions">
-      <button type="button" id="confirm-cancel-button" class="action-button action-button--secondary">cancel</button>
-      <button type="button" id="confirm-confirm-button" class="action-button">confirm</button>
+      <button type="button" id="name-modal-cancel-button" class="action-button action-button--secondary">cancel</button>
+      <button type="button" id="name-modal-save-button" class="action-button">save</button>
     </div>
   </div>
 `;
-document.body.appendChild(confirmModal);
-confirmTitle = document.getElementById('confirm-title') as HTMLHeadingElement;
-confirmBody = document.getElementById('confirm-body') as HTMLParagraphElement;
-confirmConfirmButton = document.getElementById('confirm-confirm-button') as HTMLButtonElement;
-confirmCancelButton = document.getElementById('confirm-cancel-button') as HTMLButtonElement;
+document.body.appendChild(nameModal);
+nameModalInput = document.getElementById('name-modal-input') as HTMLInputElement;
+nameModalSaveButton = document.getElementById('name-modal-save-button') as HTMLButtonElement;
+nameModalCancelButton = document.getElementById('name-modal-cancel-button') as HTMLButtonElement;
 
 shuffleButton = document.getElementById('shuffle-button') as HTMLButtonElement | null;
 if (shuffleButton) {
@@ -429,24 +430,6 @@ if (exchangeButton) {
   });
 }
 
-resetButton = document.getElementById('reset-button') as HTMLButtonElement | null;
-if (resetButton) {
-  resetButton.addEventListener('click', () => {
-    hideOptionsMenu();
-    if (!latestGameState || !currentPlayer(latestGameState)) return;
-    showConfirmationModal({
-      title: 'Reset game?',
-      body: 'This clears the board, keeps you in the game, and removes the other player until they rejoin.',
-      confirmLabel: 'reset',
-      confirmTone: 'reset',
-      onConfirm: () => {
-        if (!latestGameState || !currentPlayer(latestGameState)) return;
-        sendMessageToServer({ type: 'reset_game' });
-      },
-    });
-  });
-}
-
 scrabbleLayoutButton.addEventListener('click', () => {
   requestBoardLayout('scrabble');
 });
@@ -459,6 +442,10 @@ nytCrossplayLayoutButton.addEventListener('click', () => {
   requestBoardLayout('nyt-crossplay');
 });
 
+singlePlayerMenuButton.addEventListener('click', () => {
+  requestSinglePlayerMode();
+});
+
 if (optionsButton) {
   optionsButton.addEventListener('click', (event) => {
     event.stopPropagation();
@@ -466,39 +453,38 @@ if (optionsButton) {
   });
 }
 
-confirmCancelButton.addEventListener('click', hideConfirmModal);
-confirmConfirmButton.addEventListener('click', () => {
-  const action = pendingConfirmAction;
-  hideConfirmModal();
-  action?.();
+headerCopyInviteButton?.addEventListener('click', () => {
+  const { currentGameId } = getClientState();
+  if (!currentGameId) return;
+  void copyInviteLink(currentGameId);
 });
 
-accountPrimaryButton.addEventListener('click', () => {
-  void handleAccountPrimaryAction();
+changeDisplayNameMenuButton.addEventListener('click', () => {
+  hideOptionsMenu();
+  const activeClaim = currentStoredClaim();
+  if (!activeClaim) return;
+  openNameModal(activeClaim.playerName);
 });
 
-accountSecondaryButton.addEventListener('click', () => {
-  void handleAccountSecondaryAction();
+newGameMenuButton.addEventListener('click', () => {
+  hideOptionsMenu();
+  void createNewGame();
 });
 
-accountNameButton.addEventListener('click', () => {
-  void handleAccountNameAction();
+nameModalCancelButton.addEventListener('click', hideNameModal);
+nameModalSaveButton.addEventListener('click', () => {
+  void submitNameModal();
 });
-
-accountInput.addEventListener('input', () => {
-  syncAccountUi();
-});
-
-accountInput.addEventListener('keydown', (event) => {
+nameModalInput.addEventListener('input', syncNameModalUi);
+nameModalInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') {
     event.preventDefault();
-    void handleAccountNameAction();
+    void submitNameModal();
   }
 });
-
-confirmModal.addEventListener('click', (event) => {
-  if (event.target === confirmModal) {
-    hideConfirmModal();
+nameModal.addEventListener('click', (event) => {
+  if (event.target === nameModal) {
+    hideNameModal();
   }
 });
 
@@ -511,8 +497,8 @@ document.addEventListener('click', (event) => {
 });
 
 window.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && !confirmModal.hidden) {
-    hideConfirmModal();
+  if (event.key === 'Escape' && !nameModal.hidden) {
+    hideNameModal();
     return;
   }
   if (event.key === 'Escape' && !optionsMenu.hidden) {
@@ -613,7 +599,7 @@ function shouldRefreshStatusFromState(): boolean {
 }
 
 function clearCurrentGameState(message: string, clearSelection = false): void {
-  hideConfirmModal();
+  hideNameModal();
   hideOptionsMenu();
   clearMovePreview();
   stopScoreAnimation();
@@ -653,8 +639,8 @@ function createTile(tileState: TileState, tileHolder: Hand | Board, played: bool
 }
 
 function currentPlayer(state: GameState): PlayerPublicState | null {
-  if (!hasCurrentPlayerId()) return null;
-  const playerId = getCurrentPlayerId();
+  const playerId = currentStoredClaim()?.playerId ?? getClientState().currentPlayerId;
+  if (!playerId) return null;
   return state.players.find((player) => player.id === playerId) ?? null;
 }
 
@@ -777,14 +763,9 @@ function updateActionButtons(): void {
   const player = latestGameState ? currentPlayer(latestGameState) : null;
   const isMyTurn = Boolean(player && latestGameState?.currentPlayerId === player.id);
   const baseDisabled = waitingForServer || !isMyTurn || !socketIsOpen();
-  const resetDisabled = waitingForServer || !player || !socketIsOpen();
 
   for (const button of [playButton, passButton, shuffleButton, recallButton]) {
     if (button) button.disabled = baseDisabled;
-  }
-
-  if (resetButton) {
-    resetButton.disabled = resetDisabled;
   }
 
   if (exchangeButton) {
@@ -793,7 +774,8 @@ function updateActionButtons(): void {
     exchangeButton.disabled = baseDisabled || selectedCount === 0;
   }
 
-  updateOptionsMenuState(player, resetDisabled);
+  updateHeaderActions();
+  updateOptionsMenuState(player);
 }
 
 function attachRackSelection(tile: Tile): void {
@@ -933,59 +915,28 @@ function clearMovePreviewMarks(): void {
 }
 
 function syncAccountUi(): void {
-  const { claims, currentClaimToken, currentGameId } = getClientState();
-  const activeClaim = currentStoredClaim();
-  const displaySummary = currentDisplayedSummary();
-  const currentName = activeClaim?.playerName ?? '';
-  const hasOpenSeat = displaySummary ? displaySummary.players.some((player) => player.id === null) : true;
-  const nameDraft = document.activeElement === accountInput
-    ? accountInput.value.trim()
-    : currentName;
+  const { currentGameId } = getClientState();
 
   accountCurrentValue.textContent = currentGameId
     ? `Game ${shortGameId(currentGameId)}`
     : 'No game selected';
-  accountCurrentValue.title = displaySummary?.gameId ?? currentGameId ?? '';
-  if (document.activeElement !== accountInput) {
-    accountInput.value = currentClaimToken ? currentName : '';
-  }
-  accountInput.placeholder = currentClaimToken ? 'display name' : 'Claim a seat to set your name';
-  accountInput.disabled = accountRequestInFlight || !currentClaimToken;
-  accountNameButton.textContent = 'Save name';
-  accountNameButton.disabled = accountRequestInFlight
-    || !currentClaimToken
-    || nameDraft.length === 0
-    || nameDraft === currentName;
-
-  if (currentGameId) {
-    accountPrimaryButton.textContent = currentClaimToken ? 'Copy invite' : 'Claim seat';
-    accountSecondaryButton.textContent = currentClaimToken ? 'New game' : 'Copy invite';
-  } else {
-    accountPrimaryButton.textContent = 'Create game';
-    accountSecondaryButton.textContent = claims.length > 0 ? 'Latest game' : 'Clear';
-  }
-
-  accountPrimaryButton.disabled = accountRequestInFlight || (
-    currentGameId !== null &&
-    !currentClaimToken &&
-    !hasOpenSeat
-  );
-  accountSecondaryButton.disabled = accountRequestInFlight || (
-    currentGameId === null &&
-    claims.length === 0
-  );
+  accountCurrentValue.title = currentDisplayedSummary()?.gameId ?? currentGameId ?? '';
 
   renderAccountGames();
+  syncNameModalUi();
+  updateHeaderActions();
 }
 
 function renderAccountGames(): void {
   const { claims, currentGameId, currentPlayerId } = getClientState();
   const displaySummary = currentDisplayedSummary();
   if (currentGameId && displaySummary) {
+    const activePlayerId = currentStoredClaim()?.playerId ?? currentPlayerId;
     const chips = displaySummary.players.map((player) => {
+      const isSelf = Boolean(player.id && activePlayerId === player.id);
       const chip = document.createElement('div');
       chip.classList.add('room-player');
-      if (player.id && currentPlayerId === player.id) {
+      if (isSelf) {
         chip.classList.add('room-player--self');
       }
 
@@ -995,13 +946,13 @@ function renderAccountGames(): void {
 
       const value = document.createElement('strong');
       value.classList.add('room-player__value');
-      value.textContent = player.name ?? 'Waiting';
+      value.textContent = player.name ?? (displaySummary.singlePlayer ? 'Solo only' : 'Waiting');
 
       const stateText = document.createElement('span');
       stateText.classList.add('room-player__state');
       stateText.textContent = player.id
         ? (player.connected ? 'connected' : 'away')
-        : 'open';
+        : (displaySummary.singlePlayer ? 'closed' : 'open');
 
       chip.append(label, value, stateText);
       return chip;
@@ -1089,6 +1040,8 @@ function summaryFromState(state: GameState): GameSummary {
     }),
     currentPlayerId: state.currentPlayerId,
     gameEnded: state.gameEnded,
+    singlePlayer: state.singlePlayer,
+    canChangeSinglePlayer: state.canChangeSinglePlayer,
     teamScore: state.teamScore,
     updatedAt: new Date().toISOString(),
   };
@@ -1098,8 +1051,13 @@ function selectedGameStatusText(summary: GameSummary): string {
   const { currentClaimToken } = getClientState();
   const currentPlayers = summary.players.filter((player) => player.id !== null);
   if (summary.gameEnded) return 'Finished';
+  if (summary.singlePlayer) {
+    if (!currentClaimToken) return 'Spectating';
+    if (!socketIsOpen()) return 'Reconnecting';
+    return 'Solo';
+  }
   if (currentPlayers.length < 2) return currentClaimToken ? 'Waiting for partner' : 'Open seat available';
-  if (!currentClaimToken) return 'Game in progress';
+  if (!currentClaimToken) return 'Spectating';
   if (!socketIsOpen()) return 'Reconnecting';
   return 'Connected';
 }
@@ -1268,48 +1226,47 @@ function formatCellPosition(col: number, row: number): string {
   return `(${col},${row})`;
 }
 
-async function handleAccountPrimaryAction(): Promise<void> {
-  const { currentClaimToken, currentGameId } = getClientState();
-  if (!currentGameId) {
-    await createNewGame();
-    return;
-  }
-
-  if (currentClaimToken) {
-    await copyInviteLink(currentGameId);
-    return;
-  }
-
-  await claimCurrentGame();
+function openNameModal(initialName: string): void {
+  nameModalInput.value = initialName;
+  syncNameModalUi();
+  nameModal.hidden = false;
+  window.requestAnimationFrame(() => {
+    nameModalInput.focus();
+    nameModalInput.select();
+  });
 }
 
-async function handleAccountSecondaryAction(): Promise<void> {
-  const { claims, currentClaimToken, currentGameId } = getClientState();
-  if (currentGameId) {
-    if (currentClaimToken) {
-      await createNewGame();
-      return;
-    }
-    await copyInviteLink(currentGameId);
-    return;
-  }
-
-  if (claims.length > 0) {
-    await openGame(claims[0].gameId);
-    return;
-  }
-
-  setStatus('No recent games yet.');
+function hideNameModal(): void {
+  nameModal.hidden = true;
 }
 
-async function handleAccountNameAction(): Promise<void> {
-  const playerNameInput = accountInput.value.trim();
+function syncNameModalUi(): void {
+  const activeClaim = currentStoredClaim();
+  const currentName = activeClaim?.playerName ?? '';
+  const nameDraft = nameModalInput.value.trim();
+  nameModalInput.disabled = accountRequestInFlight;
+  nameModalSaveButton.disabled = accountRequestInFlight
+    || !activeClaim
+    || nameDraft.length === 0
+    || nameDraft === currentName;
+}
+
+async function submitNameModal(): Promise<void> {
+  const playerNameInput = nameModalInput.value.trim();
   if (playerNameInput.length === 0) {
     setStatus('Enter a display name.', 'error');
     return;
   }
 
-  await renameCurrentPlayer(playerNameInput);
+  const didRename = await renameCurrentPlayer(playerNameInput);
+  if (didRename) {
+    hideNameModal();
+  }
+}
+
+function preferredDisplayName(): string | null {
+  const name = readPreferredDisplayName();
+  return name.length > 0 ? name : null;
 }
 
 async function createNewGame(): Promise<void> {
@@ -1318,7 +1275,7 @@ async function createNewGame(): Promise<void> {
   setStatus('Creating a new game...');
 
   try {
-    const result = await createInviteGame();
+    const result = await createInviteGame(preferredDisplayName());
     setLocationGameId(result.game.gameId);
     clearCurrentGameState(`Game ${shortGameId(result.game.gameId)} ready.`);
     rememberClaim(result.claim, result.game);
@@ -1335,23 +1292,28 @@ async function createNewGame(): Promise<void> {
   }
 }
 
-async function claimCurrentGame(): Promise<void> {
+async function claimCurrentGame(silentConflict = false): Promise<boolean> {
   const { currentGameId } = getClientState();
-  if (!currentGameId) return;
+  if (!currentGameId) return false;
 
   accountRequestInFlight = true;
   syncAccountUi();
   setStatus('Claiming the open seat...');
 
   try {
-    const result = await claimInviteGame(currentGameId);
+    const result = await claimInviteGame(currentGameId, preferredDisplayName());
     rememberClaim(result.claim, result.game);
     currentGameSummary = result.game;
     setStatus('Seat claimed.');
     syncAccountUi();
     ensureGameSocket(true);
+    return true;
   } catch (error) {
-    setStatus(errorMessage(error), 'error');
+    const message = errorMessage(error);
+    if (!silentConflict || !/already claimed|open seat/i.test(message)) {
+      setStatus(message, 'error');
+    }
+    return false;
   } finally {
     accountRequestInFlight = false;
     syncAccountUi();
@@ -1359,9 +1321,9 @@ async function claimCurrentGame(): Promise<void> {
   }
 }
 
-async function renameCurrentPlayer(playerNameInput: string): Promise<void> {
+async function renameCurrentPlayer(playerNameInput: string): Promise<boolean> {
   const { currentClaimToken, currentGameId } = getClientState();
-  if (!currentGameId || !currentClaimToken) return;
+  if (!currentGameId || !currentClaimToken) return false;
 
   accountRequestInFlight = true;
   syncAccountUi();
@@ -1370,14 +1332,24 @@ async function renameCurrentPlayer(playerNameInput: string): Promise<void> {
   try {
     const result = await renameClaimedPlayer(currentGameId, currentClaimToken, playerNameInput);
     rememberClaim(result.claim, result.game);
+    writePreferredDisplayName(result.claim.playerName);
     currentGameSummary = result.game;
     setStatus('Display name saved.');
     syncAccountUi();
-    if (latestGameState) {
-      syncGameState(latestGameState);
+    if (latestGameState && latestGameState.gameId === result.game.gameId) {
+      syncGameState({
+        ...latestGameState,
+        players: latestGameState.players.map((player) => (
+          player.id === result.claim.playerId
+            ? { ...player, name: result.claim.playerName }
+            : player
+        )),
+      });
     }
+    return true;
   } catch (error) {
     setStatus(errorMessage(error), 'error');
+    return false;
   } finally {
     accountRequestInFlight = false;
     syncAccountUi();
@@ -1386,7 +1358,7 @@ async function renameCurrentPlayer(playerNameInput: string): Promise<void> {
 }
 
 async function openGame(gameId: string): Promise<void> {
-  const activeClaim = claimForGame(gameId);
+  const activeClaim = findStoredClaim(getClientState().claims, gameId);
   hydrateClientState({
     currentClaimToken: activeClaim?.claimToken ?? null,
     currentGameId: gameId,
@@ -1394,14 +1366,24 @@ async function openGame(gameId: string): Promise<void> {
   });
   setLocationGameId(gameId);
   clearCurrentGameState('Loading game...');
-  if (!activeClaim) {
+  const nextSocketTarget = currentSocketTarget();
+  if (
+    !activeClaim ||
+    (socket && nextSocketTarget && !socketMatchesTarget(socket, nextSocketTarget))
+  ) {
     disconnectSocket();
   }
   syncAccountUi();
   await loadCurrentGameSummary(gameId);
-  if (activeClaim) {
-    ensureGameSocket(true);
+  if (
+    !activeClaim &&
+    currentGameSummary &&
+    !currentGameSummary.singlePlayer &&
+    currentGameSummary.players.some((player) => player.id === null)
+  ) {
+    await claimCurrentGame(true);
   }
+  ensureGameSocket();
 }
 
 async function loadCurrentGameSummary(gameId: string): Promise<void> {
@@ -1439,13 +1421,11 @@ function rememberClaim(claim: ClaimSession, summary: GameSummary): void {
     opponentName: summaryOpponentName(summary, claim.playerId),
     updatedAt: summary.updatedAt || new Date().toISOString(),
   });
-  setDefaultPlayerName(claim.playerName);
   hydrateClientState({
     claims: nextStore.claims,
     currentClaimToken: claim.claimToken,
     currentGameId: claim.gameId,
     currentPlayerId: claim.playerId,
-    defaultPlayerName: claim.playerName,
   });
 }
 
@@ -1464,14 +1444,15 @@ function syncStoredClaimFromState(state: GameState, player: PlayerPublicState): 
   hydrateClientState({
     claims: nextStore.claims,
     currentPlayerId: player.id,
-    defaultPlayerName: player.name,
   });
 }
 
 function currentStoredClaim(): StoredClaim | null {
   const { currentClaimToken, currentGameId } = getClientState();
   if (!currentGameId || !currentClaimToken) return null;
-  return claimForGame(currentGameId);
+  const claim = findStoredClaim(getClientState().claims, currentGameId);
+  if (!claim || claim.claimToken !== currentClaimToken) return null;
+  return claim;
 }
 
 function setLocationGameId(gameId: string | null): void {
@@ -1487,6 +1468,15 @@ function setLocationGameId(gameId: string | null): void {
 function currentGameIdFromLocation(): string | null {
   const gameId = new URL(window.location.href).searchParams.get('game');
   return gameId && gameId.length > 0 ? gameId : null;
+}
+
+function findStoredClaim(claims: readonly StoredClaim[], gameId: string | null): StoredClaim | null {
+  if (!gameId) return null;
+  return claims.find((claim) => claim.gameId === gameId) ?? null;
+}
+
+function isDefaultSeatName(name: string, seat: number): boolean {
+  return name === `Player ${seat}`;
 }
 
 async function copyInviteLink(gameId: string): Promise<void> {
@@ -1583,10 +1573,25 @@ function hideOptionsMenu(): void {
   optionsMenu.hidden = true;
 }
 
-function updateOptionsMenuState(player: PlayerPublicState | null, resetDisabled: boolean): void {
+function updateHeaderActions(): void {
+  if (!headerCopyInviteButton) return;
+  const { currentGameId } = getClientState();
+  const canCopyInvite = Boolean(currentGameId && !accountRequestInFlight);
+  headerCopyInviteButton.hidden = !currentGameId;
+  headerCopyInviteButton.disabled = !canCopyInvite;
+}
+
+function updateOptionsMenuState(player: PlayerPublicState | null): void {
+  const singlePlayerEnabled = latestGameState?.singlePlayer ?? currentGameSummary?.singlePlayer ?? false;
   const canChangeLayout = Boolean(
     player &&
     latestGameState?.canChangeBoardLayout &&
+    socketIsOpen() &&
+    !waitingForServer,
+  );
+  const canChangeSinglePlayer = Boolean(
+    player &&
+    latestGameState?.canChangeSinglePlayer &&
     socketIsOpen() &&
     !waitingForServer,
   );
@@ -1601,9 +1606,9 @@ function updateOptionsMenuState(player: PlayerPublicState | null, resetDisabled:
     currentBoardLayout === 'nyt-crossplay',
     !canChangeLayout,
   );
-  if (resetButton) {
-    resetButton.disabled = resetDisabled;
-  }
+  setBoardLayoutButtonState(singlePlayerMenuButton, singlePlayerEnabled, !canChangeSinglePlayer);
+  changeDisplayNameMenuButton.disabled = accountRequestInFlight || waitingForServer || !currentStoredClaim();
+  newGameMenuButton.disabled = accountRequestInFlight;
 }
 
 function setBoardLayoutButtonState(
@@ -1638,6 +1643,18 @@ function requestBoardLayout(layout: BoardLayoutType): void {
   sendMessageToServer({
     type: 'set_board_layout',
     layout,
+  });
+  hideOptionsMenu();
+}
+
+function requestSinglePlayerMode(): void {
+  if (!latestGameState || !currentPlayer(latestGameState)) {
+    hideOptionsMenu();
+    return;
+  }
+  sendMessageToServer({
+    type: 'set_single_player',
+    enabled: !latestGameState.singlePlayer,
   });
   hideOptionsMenu();
 }
@@ -1718,28 +1735,30 @@ function socketIsOpen(): boolean {
   return Boolean(socket && socket.readyState === WebSocket.OPEN);
 }
 
-function webSocketUrl(claimToken: string, gameId: string): string {
+function webSocketUrl(claimToken: string | null, gameId: string): string {
   const query = new URLSearchParams();
-  query.set('claim', claimToken);
   query.set('game', gameId);
+  if (claimToken) {
+    query.set('claim', claimToken);
+  }
   return resolveWebSocketUrl('/ws', query);
 }
 
-function currentSocketTarget(): { claimToken: string; gameId: string } | null {
+function currentSocketTarget(): { claimToken: string | null; gameId: string } | null {
   const { currentClaimToken, currentGameId } = getClientState();
-  return currentGameId && currentClaimToken ? { claimToken: currentClaimToken, gameId: currentGameId } : null;
+  return currentGameId ? { claimToken: currentClaimToken, gameId: currentGameId } : null;
 }
 
 function socketMatchesTarget(
   candidateSocket: WebSocket,
-  target: { claimToken: string; gameId: string },
+  target: { claimToken: string | null; gameId: string },
 ): boolean {
   const socketUrl = new URL(candidateSocket.url);
   return socketUrl.searchParams.get('claim') === target.claimToken &&
     socketUrl.searchParams.get('game') === target.gameId;
 }
 
-function shouldReconnectTo(target: { claimToken: string; gameId: string }): boolean {
+function shouldReconnectTo(target: { claimToken: string | null; gameId: string }): boolean {
   const desiredTarget = currentSocketTarget();
   return Boolean(
     desiredTarget &&
@@ -1758,6 +1777,17 @@ function handleServerMessage(message: unknown): void {
     case 'game_state': {
       if (!('state' in message)) {
         setStatus('Server state message was missing game data.', 'error');
+        return;
+      }
+
+      if (!isRecord(message.state)) {
+        setStatus('Server state message was malformed.', 'error');
+        return;
+      }
+
+      const stateGameId = readStringValue(message.state.gameId);
+      const selectedGameId = getClientState().currentGameId;
+      if (selectedGameId && stateGameId && stateGameId !== selectedGameId) {
         return;
       }
 
@@ -1813,37 +1843,4 @@ function readStringValue(value: unknown): string | null {
 
 function readIntegerValue(value: unknown): number | null {
   return Number.isInteger(value) ? Number(value) : null;
-}
-
-function showConfirmModal(): void {
-  confirmModal.hidden = false;
-}
-
-function showConfirmationModal({
-  title,
-  body,
-  confirmLabel,
-  confirmTone,
-  onConfirm,
-}: {
-  title: string;
-  body: string;
-  confirmLabel: string;
-  confirmTone: 'play' | 'pass' | 'exchange' | 'reset';
-  onConfirm: () => void;
-}): void {
-  confirmTitle.textContent = title;
-  confirmBody.textContent = body;
-  confirmConfirmButton.textContent = confirmLabel;
-  confirmConfirmButton.className = 'action-button';
-  confirmConfirmButton.classList.add(`action-button--${confirmTone}`);
-  pendingConfirmAction = onConfirm;
-  showConfirmModal();
-  confirmCancelButton.focus();
-}
-
-function hideConfirmModal(): void {
-  confirmModal.hidden = true;
-  pendingConfirmAction = null;
-  confirmConfirmButton.className = 'action-button';
 }

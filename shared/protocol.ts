@@ -7,6 +7,7 @@ export type ClientMessage =
   | { type: 'pass_turn' }
   | { type: 'exchange_tiles'; tileIds: string[] }
   | { type: 'set_board_layout'; layout: BoardLayoutType }
+  | { type: 'set_single_player'; enabled: boolean }
   | { type: 'reset_game' };
 
 export type ServerMessage =

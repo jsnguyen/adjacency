@@ -24,6 +24,8 @@ export function normalizeGameSummary(value: unknown): GameSummary | null {
     players,
     currentPlayerId: readString(value.currentPlayerId),
     gameEnded: Boolean(value.gameEnded),
+    singlePlayer: Boolean(value.singlePlayer),
+    canChangeSinglePlayer: Boolean(value.canChangeSinglePlayer),
     teamScore: readNumber(value.teamScore) ?? 0,
     updatedAt: readString(value.updatedAt) ?? '',
   };
@@ -57,36 +59,6 @@ export function playerName(player: PlayerPublicState): string {
 
 export function shortGameId(gameId: string): string {
   return gameId.slice(0, 6);
-}
-
-export function describeGameSummary(summary: GameSummary, playerId: string | null): { title: string; status: string } {
-  const claimedPlayers = summary.players.filter((player) => player.name !== null);
-  const currentPlayer = playerId
-    ? summary.players.find((player) => player.id === playerId) ?? null
-    : null;
-  const opponent = currentPlayer
-    ? summary.players.find((player) => player.id !== currentPlayer.id && player.name !== null) ?? null
-    : claimedPlayers[0] ?? null;
-
-  const title = opponent?.name ?? (claimedPlayers.length === 0 ? `Game ${shortGameId(summary.gameId)}` : 'Waiting for player 2');
-  const statusParts: string[] = [];
-  if (currentPlayer) {
-    statusParts.push(`seat ${currentPlayer.seat}`);
-  }
-  if (summary.gameEnded) {
-    statusParts.push('finished');
-  } else if (claimedPlayers.length < 2) {
-    statusParts.push('waiting');
-  } else if (playerId && summary.currentPlayerId === playerId) {
-    statusParts.push('your turn');
-  } else {
-    statusParts.push('their turn');
-  }
-  statusParts.push(`${summary.teamScore} pts`);
-  return {
-    title,
-    status: statusParts.join(' / '),
-  };
 }
 
 export function summaryOpponentName(summary: GameSummary, playerId: string | null): string | null {

@@ -132,5 +132,25 @@ assert.ok(unnamedFirst);
 assert.ok(unnamedSecond);
 assert.equal(unnamedFirst.name, 'Player 1');
 assert.equal(unnamedSecond.name, 'Player 2');
+assert.equal(unnamedRoom.claimSeat('Bad Seat', 3, 'claim-bad-seat', null), null);
+
+const soloRoom = new GameRoom('solo-room');
+const soloPlayer = soloRoom.claimSeat('Solo', 1, 'claim-solo', null);
+assert.ok(soloPlayer);
+assert.equal(soloRoom.setSinglePlayer(soloPlayer.id, true), null);
+
+state = soloRoom.snapshot();
+assert.equal(state.singlePlayer, true);
+assert.equal(state.canChangeSinglePlayer, true);
+assert.equal(state.currentPlayerId, soloPlayer.id);
+assert.equal(soloRoom.hasOpenSeat(), false);
+assert.equal(soloRoom.claimSeat('Late Join', 2, 'claim-late', null), null);
+
+assert.equal(soloRoom.passTurn(soloPlayer.id), null);
+state = soloRoom.snapshot();
+assert.equal(state.currentPlayerId, soloPlayer.id);
+assert.equal(state.turnHistory[0]?.kind, 'pass');
+assert.equal(state.canChangeSinglePlayer, false);
+assert.equal(soloRoom.setSinglePlayer(soloPlayer.id, false), 'Single-player mode can only change before the first turn.');
 
 console.log('Game room tests passed.');

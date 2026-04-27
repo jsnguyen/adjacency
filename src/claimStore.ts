@@ -10,7 +10,6 @@ export type StoredClaim = {
 
 type StoredClaimStore = {
   claims: StoredClaim[];
-  defaultPlayerName: string;
 };
 
 const STORAGE_KEY = 'adjacency_claims';
@@ -18,19 +17,18 @@ const STORAGE_KEY = 'adjacency_claims';
 export function readClaimStore(): StoredClaimStore {
   const storage = browserStorage();
   if (!storage) {
-    return { claims: [], defaultPlayerName: '' };
+    return { claims: [] };
   }
 
   try {
     const raw = storage.getItem(STORAGE_KEY);
-    if (!raw) return { claims: [], defaultPlayerName: '' };
+    if (!raw) return { claims: [] };
     const parsed = JSON.parse(raw) as Partial<StoredClaimStore>;
     return {
       claims: Array.isArray(parsed.claims) ? parsed.claims.filter(isStoredClaim) : [],
-      defaultPlayerName: typeof parsed.defaultPlayerName === 'string' ? parsed.defaultPlayerName : '',
     };
   } catch {
-    return { claims: [], defaultPlayerName: '' };
+    return { claims: [] };
   }
 }
 
@@ -65,21 +63,6 @@ export function removeStoredClaim(gameId: string): StoredClaimStore {
   };
   writeClaimStore(nextStore);
   return nextStore;
-}
-
-export function setDefaultPlayerName(defaultPlayerName: string): StoredClaimStore {
-  const currentStore = readClaimStore();
-  const nextStore = {
-    ...currentStore,
-    defaultPlayerName,
-  };
-  writeClaimStore(nextStore);
-  return nextStore;
-}
-
-export function claimForGame(gameId: string | null): StoredClaim | null {
-  if (!gameId) return null;
-  return readClaimStore().claims.find((claim) => claim.gameId === gameId) ?? null;
 }
 
 function sortClaims(claims: StoredClaim[]): StoredClaim[] {
