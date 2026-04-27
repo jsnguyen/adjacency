@@ -1,0 +1,19 @@
+{
+  "name": "Adjacency",
+  "short_name": "Adjacency",
+  "description": "A co-op word game for two players.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#eef4fc",
+  "theme_color": "#eef4fc",
+  "icons": [
+    {
+      "src": "/app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

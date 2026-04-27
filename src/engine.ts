@@ -48,12 +48,21 @@ import {
   setCurrentPlayerId,
 } from './clientState.ts'
 import { resolveWebSocketUrl } from './network.ts'
+import {
+  clearTurnNotifications,
+  currentTurnNotificationPermission,
+  installTurnNotificationAutoClear,
+  notifyCurrentPlayerTurn,
+  requestTurnNotificationPermission,
+  turnNotificationsSupported,
+} from './turnNotifications.ts'
 
 const reconnectBaseDelayMs = 400;
 const reconnectMaxDelayMs = 8000;
 const APP_SHELL_WIDTH = `${parseInt(APP_WIDTH, 10) + 304}px`;
 const PLAYER_NAME_MAX_LENGTH = 24;
 const PREVIEW_DEBOUNCE_MS = 120;
+const mobileLayoutQuery = window.matchMedia('(max-width: 720px)');
 
 let socket: WebSocket | null = null;
 let reconnectAttempts = 0;
@@ -75,7 +84,10 @@ let historyList: HTMLDivElement;
 let previewLayer: HTMLDivElement;
 let optionsButton: HTMLButtonElement | null = null;
 let headerCopyInviteButton: HTMLButtonElement | null = null;
+let menuCopyInviteButton!: HTMLButtonElement;
 let optionsMenu!: HTMLDivElement;
+let mobileStatusSection!: HTMLDivElement;
+let mobileHistorySection!: HTMLDivElement;
 let gameOverPrompt: HTMLDivElement | null = null;
 let playButton: HTMLButtonElement | null = null;
 let passButton: HTMLButtonElement | null = null;
@@ -84,6 +96,7 @@ let shuffleButton: HTMLButtonElement | null = null;
 let recallButton: HTMLButtonElement | null = null;
 let newGameMenuButton!: HTMLButtonElement;
 let changeDisplayNameMenuButton!: HTMLButtonElement;
+let notificationMenuButton!: HTMLButtonElement;
 let singlePlayerMenuButton!: HTMLButtonElement;
 let scrabbleLayoutButton!: HTMLButtonElement;
 let wordsWithFriendsLayoutButton!: HTMLButtonElement;
@@ -111,10 +124,20 @@ function sendMessageToServer(message: ClientMessage): void {
   socket.send(JSON.stringify(message));
 }
 
+function registerServiceWorker(): void {
+  if (!('serviceWorker' in navigator)) return;
+  window.addEventListener('load', () => {
+    void navigator.serviceWorker.register('/service-worker.js').catch(() => {
+      // The game still works without offline shell caching.
+    });
+  });
+}
+
 const appRoot = document.getElementById('app');
 if (!appRoot) {
   throw new Error('Missing #app');
 }
+registerServiceWorker();
 const app = appRoot as HTMLDivElement;
 app.style.width = `min(calc(100vw - 28px), ${APP_SHELL_WIDTH})`;
 const initialStore = readClaimStore();
@@ -227,6 +250,17 @@ if (header) {
 
   modeSection.append(modeLabel, singlePlayerMenuButton);
 
+  const notificationSection = document.createElement('div');
+  notificationSection.classList.add('options-menu__section');
+  const notificationLabel = document.createElement('div');
+  notificationLabel.classList.add('options-menu__label');
+  notificationLabel.textContent = 'Notifications';
+  notificationMenuButton = document.createElement('button');
+  notificationMenuButton.classList.add('options-menu__button');
+  notificationMenuButton.type = 'button';
+  notificationMenuButton.textContent = 'Enable turn notifications';
+  notificationSection.append(notificationLabel, notificationMenuButton);
+
   const profileSection = document.createElement('div');
   profileSection.classList.add('options-menu__section');
   const profileLabel = document.createElement('div');
@@ -243,13 +277,31 @@ if (header) {
   const gameLabel = document.createElement('div');
   gameLabel.classList.add('options-menu__label');
   gameLabel.textContent = 'Game';
+  menuCopyInviteButton = document.createElement('button');
+  menuCopyInviteButton.classList.add('options-menu__button');
+  menuCopyInviteButton.type = 'button';
+  menuCopyInviteButton.textContent = 'Copy invite';
   newGameMenuButton = document.createElement('button');
   newGameMenuButton.classList.add('options-menu__button');
   newGameMenuButton.type = 'button';
   newGameMenuButton.textContent = 'New game';
-  gameSection.append(gameLabel, newGameMenuButton);
+  gameSection.append(gameLabel, menuCopyInviteButton, newGameMenuButton);
 
-  optionsMenu.append(layoutSection, modeSection, profileSection, gameSection);
+  mobileStatusSection = document.createElement('div');
+  mobileStatusSection.classList.add('options-menu__section', 'options-menu__section--mobile-panel');
+
+  mobileHistorySection = document.createElement('div');
+  mobileHistorySection.classList.add('options-menu__section', 'options-menu__section--mobile-panel');
+
+  optionsMenu.append(
+    gameSection,
+    notificationSection,
+    mobileStatusSection,
+    mobileHistorySection,
+    layoutSection,
+    modeSection,
+    profileSection,
+  );
   gameOverPrompt = document.createElement('div');
   gameOverPrompt.classList.add('game-over-prompt');
   gameOverPrompt.hidden = true;
@@ -259,7 +311,8 @@ if (header) {
     <span class="game-over-prompt__text">New game to play again</span>
   `;
 
-  headerActions.append(headerCopyInviteButton, optionsButton, optionsMenu, gameOverPrompt);
+  document.body.appendChild(optionsMenu);
+  headerActions.append(headerCopyInviteButton, optionsButton, gameOverPrompt);
   header.appendChild(headerActions);
 }
 
@@ -356,6 +409,9 @@ if ('ResizeObserver' in window) {
 
 window.addEventListener('resize', syncHistoryPanelHeight);
 window.requestAnimationFrame(syncHistoryPanelHeight);
+syncMobileLayout();
+mobileLayoutQuery.addEventListener('change', syncMobileLayout);
+installTurnNotificationAutoClear();
 
 nameModal = document.createElement('div');
 nameModal.classList.add('modal-backdrop');
@@ -459,6 +515,13 @@ headerCopyInviteButton?.addEventListener('click', () => {
   void copyInviteLink(currentGameId);
 });
 
+menuCopyInviteButton.addEventListener('click', () => {
+  const { currentGameId } = getClientState();
+  if (!currentGameId) return;
+  hideOptionsMenu();
+  void copyInviteLink(currentGameId);
+});
+
 changeDisplayNameMenuButton.addEventListener('click', () => {
   hideOptionsMenu();
   const activeClaim = currentStoredClaim();
@@ -469,6 +532,10 @@ changeDisplayNameMenuButton.addEventListener('click', () => {
 newGameMenuButton.addEventListener('click', () => {
   hideOptionsMenu();
   void createNewGame();
+});
+
+notificationMenuButton.addEventListener('click', () => {
+  void enableTurnNotifications();
 });
 
 nameModalCancelButton.addEventListener('click', hideNameModal);
@@ -584,6 +651,7 @@ function syncGameState(state: GameState): void {
   }
 
   updateStatusFromState(state, player, previousState);
+  void notifyTurnFromState(state, player);
   renderAccountGames();
   updateActionButtons();
 }
@@ -668,6 +736,27 @@ function updateStatusFromState(
   app.classList.toggle('app--game-ended', state.gameEnded);
   syncGameOverPrompt(state.gameEnded);
   renderTurnHistory(state.turnHistory);
+}
+
+async function notifyTurnFromState(
+  state: GameState,
+  player: PlayerPublicState | null,
+): Promise<void> {
+  if (!player) {
+    await clearTurnNotifications();
+    return;
+  }
+
+  await notifyCurrentPlayerTurn({
+    currentPlayerId: state.currentPlayerId,
+    localPlayerId: player.id,
+    gameId: state.gameId,
+    turnId: state.turnHistory[0]?.turn ?? 0,
+    gameEnded: state.gameEnded,
+    title: 'Your turn in Adjacency',
+    body: 'Your rack is ready.',
+    url: `${window.location.origin}${window.location.pathname}?game=${encodeURIComponent(state.gameId)}`,
+  });
 }
 
 function syncGameOverPrompt(gameEnded: boolean): void {
@@ -770,12 +859,22 @@ function updateActionButtons(): void {
 
   if (exchangeButton) {
     const selectedCount = selectedHandTileIds().length;
-    exchangeButton.textContent = selectedCount > 0 ? `exchange ${selectedCount}` : 'exchange';
+    setActionButtonLabel(exchangeButton, selectedCount > 0 ? `exchange ${selectedCount}` : 'exchange');
     exchangeButton.disabled = baseDisabled || selectedCount === 0;
   }
 
   updateHeaderActions();
   updateOptionsMenuState(player);
+}
+
+function setActionButtonLabel(button: HTMLButtonElement, label: string): void {
+  const text = button.querySelector('.action-button__text');
+  if (text) {
+    text.textContent = label;
+    button.title = label;
+    return;
+  }
+  button.textContent = label;
 }
 
 function attachRackSelection(tile: Tile): void {
@@ -1357,6 +1456,24 @@ async function renameCurrentPlayer(playerNameInput: string): Promise<boolean> {
   }
 }
 
+async function enableTurnNotifications(): Promise<void> {
+  if (!turnNotificationsSupported()) {
+    setStatus('Turn notifications are not supported in this browser.', 'error');
+    updateActionButtons();
+    return;
+  }
+
+  const permission = await requestTurnNotificationPermission();
+  if (permission === 'granted') {
+    setStatus('Turn notifications enabled.');
+  } else if (permission === 'denied') {
+    setStatus('Turn notifications are blocked in browser settings.', 'error');
+  } else {
+    setStatus('Turn notifications were not enabled.', 'error');
+  }
+  updateActionButtons();
+}
+
 async function openGame(gameId: string): Promise<void> {
   const activeClaim = findStoredClaim(getClientState().claims, gameId);
   hydrateClientState({
@@ -1574,11 +1691,15 @@ function hideOptionsMenu(): void {
 }
 
 function updateHeaderActions(): void {
-  if (!headerCopyInviteButton) return;
   const { currentGameId } = getClientState();
   const canCopyInvite = Boolean(currentGameId && !accountRequestInFlight);
-  headerCopyInviteButton.hidden = !currentGameId;
-  headerCopyInviteButton.disabled = !canCopyInvite;
+  if (headerCopyInviteButton) {
+    headerCopyInviteButton.hidden = !currentGameId;
+    headerCopyInviteButton.disabled = !canCopyInvite;
+  }
+  if (menuCopyInviteButton) {
+    menuCopyInviteButton.disabled = !canCopyInvite;
+  }
 }
 
 function updateOptionsMenuState(player: PlayerPublicState | null): void {
@@ -1607,8 +1728,55 @@ function updateOptionsMenuState(player: PlayerPublicState | null): void {
     !canChangeLayout,
   );
   setBoardLayoutButtonState(singlePlayerMenuButton, singlePlayerEnabled, !canChangeSinglePlayer);
+  syncNotificationButtonState();
   changeDisplayNameMenuButton.disabled = accountRequestInFlight || waitingForServer || !currentStoredClaim();
   newGameMenuButton.disabled = accountRequestInFlight;
+}
+
+function syncNotificationButtonState(): void {
+  if (!notificationMenuButton) return;
+
+  const permission = currentTurnNotificationPermission();
+  if (permission === 'unsupported') {
+    notificationMenuButton.textContent = 'Notifications unavailable';
+    notificationMenuButton.disabled = true;
+    return;
+  }
+  if (permission === 'granted') {
+    notificationMenuButton.textContent = 'Turn notifications on';
+    notificationMenuButton.disabled = true;
+    return;
+  }
+  if (permission === 'denied') {
+    notificationMenuButton.textContent = 'Notifications blocked';
+    notificationMenuButton.disabled = true;
+    return;
+  }
+
+  notificationMenuButton.textContent = 'Enable turn notifications';
+  notificationMenuButton.disabled = accountRequestInFlight;
+}
+
+function syncMobileLayout(): void {
+  if (mobileLayoutQuery.matches) {
+    if (statusScoreCard.parentElement !== mobileStatusSection) {
+      mobileStatusSection.appendChild(statusScoreCard);
+    }
+    if (historyPanel.parentElement !== mobileHistorySection) {
+      mobileHistorySection.appendChild(historyPanel);
+    }
+    app.classList.add('app--mobile-shell');
+    return;
+  }
+
+  if (statusScoreCard.parentElement !== sideColumn) {
+    sideColumn.prepend(statusScoreCard);
+  }
+  if (historyPanel.parentElement !== sideColumn) {
+    sideColumn.appendChild(historyPanel);
+  }
+  app.classList.remove('app--mobile-shell');
+  syncHistoryPanelHeight();
 }
 
 function setBoardLayoutButtonState(

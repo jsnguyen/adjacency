@@ -1145,6 +1145,8 @@ function contentType(path: string): string {
       return 'image/svg+xml';
     case '.json':
       return 'application/json; charset=utf-8';
+    case '.webmanifest':
+      return 'application/manifest+json; charset=utf-8';
     case '.ico':
       return 'image/x-icon';
     default:

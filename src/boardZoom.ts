@@ -1,7 +1,7 @@
 import type { Board } from './board.ts';
 import { DRAG_CANCEL_EVENT } from './draggable.ts';
 
-const MIN_ZOOM = 1;
+const MIN_ZOOM = 0.45;
 const MAX_ZOOM = 2.6;
 const WHEEL_ZOOM_SENSITIVITY = 0.0015;
 
@@ -23,23 +23,41 @@ export function createBoardZoomController({
   baseHeight,
 }: BoardZoomControllerOptions) {
   let scale = 1;
+  let minScale = 1;
   let pinchStartDistance: number | null = null;
   let pinchStartScale = 1;
 
+  const syncMinScale = () => {
+    const widthScale = scroller.clientWidth > 0 ? scroller.clientWidth / baseWidth : 1;
+    const heightScale = scroller.clientHeight > 0 ? scroller.clientHeight / baseHeight : 1;
+    minScale = Math.max(MIN_ZOOM, Math.min(1, widthScale, heightScale));
+  };
+
   const syncLayout = () => {
-    surface.style.width = `${baseWidth * scale}px`;
-    surface.style.height = `${baseHeight * scale}px`;
+    const scaledWidth = baseWidth * scale;
+    const scaledHeight = baseHeight * scale;
+    const viewportWidth = scroller.clientWidth;
+    const viewportHeight = scroller.clientHeight;
+    const surfaceWidth = Math.max(scaledWidth, viewportWidth);
+    const surfaceHeight = Math.max(scaledHeight, viewportHeight);
+    const offsetX = Math.max(0, (surfaceWidth - scaledWidth) / 2);
+    const offsetY = Math.max(0, (surfaceHeight - scaledHeight) / 2);
+
+    surface.style.width = `${surfaceWidth}px`;
+    surface.style.height = `${surfaceHeight}px`;
+    zoomTarget.style.marginLeft = `${offsetX}px`;
+    zoomTarget.style.marginTop = `${offsetY}px`;
     zoomTarget.style.transform = `scale(${scale})`;
     board.zoom = scale;
     scroller.classList.toggle('board-scroller--zoomed', scale > 1.001);
-    if (scale === 1) {
+    if (Math.abs(scale - minScale) < 0.001) {
       scroller.scrollLeft = 0;
       scroller.scrollTop = 0;
     }
   };
 
   const zoomAroundClientPoint = (nextScale: number, clientX: number, clientY: number) => {
-    const clampedScale = clampScale(nextScale);
+    const clampedScale = Math.min(MAX_ZOOM, Math.max(minScale, nextScale));
     if (Math.abs(clampedScale - scale) < 0.001) return;
 
     const rect = scroller.getBoundingClientRect();
@@ -88,11 +106,23 @@ export function createBoardZoomController({
   scroller.addEventListener('touchend', resetPinchState);
   scroller.addEventListener('touchcancel', resetPinchState);
 
-  syncLayout();
-}
+  const syncViewportScale = () => {
+    const wasAtMinScale = Math.abs(scale - minScale) < 0.01;
+    syncMinScale();
+    if (wasAtMinScale || scale < minScale) {
+      scale = minScale;
+      syncLayout();
+    }
+  };
 
-function clampScale(scale: number): number {
-  return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, scale));
+  if ('ResizeObserver' in window) {
+    const resizeObserver = new ResizeObserver(syncViewportScale);
+    resizeObserver.observe(scroller);
+  }
+
+  syncMinScale();
+  scale = minScale;
+  syncLayout();
 }
 
 function touchDistance(firstTouch: Touch, secondTouch: Touch): number {
