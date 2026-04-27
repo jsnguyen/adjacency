@@ -534,7 +534,7 @@ syncAccountUi();
 if (initialGameId) {
   void openGame(initialGameId);
 } else {
-  clearCurrentGameState('Create a game to get a shareable invite link.');
+  void createNewGame();
 }
 
 function syncGameState(state: GameState): void {
