@@ -1,4 +1,5 @@
 import type { GameState, GameSummaryState, PlayerPublicState } from '../shared/states.ts';
+import { isAreaBonusRule, isWordLengthRule } from '../shared/ruleSets.ts';
 
 export type ClaimSession = {
   gameId: string;
@@ -26,6 +27,10 @@ export function normalizeGameSummary(value: unknown): GameSummary | null {
     gameEnded: Boolean(value.gameEnded),
     singlePlayer: Boolean(value.singlePlayer),
     canChangeSinglePlayer: Boolean(value.canChangeSinglePlayer),
+    wordLengthRule: isWordLengthRule(value.wordLengthRule) ? value.wordLengthRule : 'standard',
+    canChangeWordLengthRule: Boolean(value.canChangeWordLengthRule),
+    areaBonusRule: isAreaBonusRule(value.areaBonusRule) ? value.areaBonusRule : 'none',
+    canChangeAreaBonusRule: Boolean(value.canChangeAreaBonusRule),
     teamScore: readNumber(value.teamScore) ?? 0,
     updatedAt: readString(value.updatedAt) ?? '',
   };

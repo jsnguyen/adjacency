@@ -8,6 +8,9 @@ export const LETTER_VALUES = {
 } as const;
 
 export type Letter = keyof typeof LETTER_VALUES;
+export type BagTile = Letter | null;
+
+export const DEFAULT_BLANK_TILE_COUNT = 3;
 
 export const TILE_DISTRIBUTION: Record<Letter, number> = {
   A: 9,

@@ -1,5 +1,6 @@
 import type { Letter } from './letters.ts';
 import type { BoardLayoutType, PremiumSquareType } from './boardBonuses.ts';
+import type { AreaBonusRule, WordLengthRule } from './ruleSets.ts';
 
 export type Grid = {
   cols: number;
@@ -12,6 +13,7 @@ export type TileState = {
   letter: Letter | null;
   col: number;
   row: number;
+  isBlank?: boolean;
 };
 
 export type TileHolderState = {
@@ -41,6 +43,10 @@ export type GameSummaryState = {
   gameEnded: boolean;
   singlePlayer: boolean;
   canChangeSinglePlayer: boolean;
+  wordLengthRule: WordLengthRule;
+  canChangeWordLengthRule: boolean;
+  areaBonusRule: AreaBonusRule;
+  canChangeAreaBonusRule: boolean;
   teamScore: number;
   updatedAt: string;
 };
@@ -63,6 +69,7 @@ export type WordLetterScoreState = {
   appliedMultiplier: number;
   tileScore: number;
   isNewTile: boolean;
+  isBlank: boolean;
   premium: PremiumSquareType;
 };
 
@@ -81,6 +88,17 @@ export type TurnWordScoreState = {
   letterSubtotal: number;
   wordMultiplier: number;
   wordBonuses: WordBonusState[];
+};
+
+export type RectangleBonusState = {
+  minCol: number;
+  minRow: number;
+  maxCol: number;
+  maxRow: number;
+  width: number;
+  height: number;
+  area: number;
+  score: number;
 };
 
 export type PreviewCellState = {
@@ -103,6 +121,7 @@ export type PreviewWordState = {
 export type MovePreviewState = {
   valid: boolean;
   words: PreviewWordState[];
+  rectangleBonuses: RectangleBonusState[];
   totalScore: number;
   reason: string | null;
 };
@@ -113,6 +132,7 @@ export type TurnHistoryEntryState = {
   playerName: string;
   kind: 'play' | 'pass' | 'exchange' | 'reset';
   words: TurnWordScoreState[];
+  rectangleBonuses: RectangleBonusState[];
   totalScore: number;
   message: string;
 };
@@ -128,6 +148,10 @@ export type GameState = {
   canChangeSinglePlayer: boolean;
   boardLayout: BoardLayoutType;
   canChangeBoardLayout: boolean;
+  wordLengthRule: WordLengthRule;
+  canChangeWordLengthRule: boolean;
+  areaBonusRule: AreaBonusRule;
+  canChangeAreaBonusRule: boolean;
   teamScore: number;
   remainingTiles: number;
   lastMove: LastMoveState;

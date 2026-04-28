@@ -3,16 +3,17 @@ import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import type { BoardLayoutType } from '../shared/boardBonuses.ts';
+import type { AreaBonusRule, WordLengthRule } from '../shared/ruleSets.ts';
 import type { LastMoveState, TurnHistoryEntryState } from '../shared/states.ts';
-import type { Letter } from '../shared/letters.ts';
-import type { LetterTileState } from './rules.ts';
+import type { BagTile } from '../shared/letters.ts';
+import type { LetterTileState, RackTileState } from './rules.ts';
 
 export type PersistedPlayerState = {
   id: string;
   claimToken: string;
   name: string;
   seat: number;
-  rack: LetterTileState[];
+  rack: RackTileState[];
 };
 
 export type PersistedGameState = {
@@ -21,11 +22,13 @@ export type PersistedGameState = {
   players: PersistedPlayerState[];
   turnOrder: string[];
   currentTurnIndex: number;
-  bag: Letter[];
+  bag: BagTile[];
   gameEnded: boolean;
   finalTurnsRemaining: number | null;
   singlePlayer: boolean;
   boardLayout: BoardLayoutType;
+  wordLengthRule: WordLengthRule;
+  areaBonusRule: AreaBonusRule;
   nextTileNumber: number;
   teamScore: number;
   lastMove: LastMoveState;
@@ -61,6 +64,8 @@ class AdjacencyDatabase {
         final_turns_remaining INTEGER,
         single_player INTEGER NOT NULL DEFAULT 0,
         board_layout TEXT NOT NULL,
+        word_length_rule TEXT NOT NULL DEFAULT 'standard',
+        area_bonus_rule TEXT NOT NULL DEFAULT 'none',
         next_tile_number INTEGER NOT NULL,
         team_score INTEGER NOT NULL,
         last_move_json TEXT,
@@ -88,6 +93,7 @@ class AdjacencyDatabase {
         player_name TEXT NOT NULL,
         kind TEXT NOT NULL,
         words_json TEXT NOT NULL,
+        rectangle_bonuses_json TEXT NOT NULL DEFAULT '[]',
         total_score INTEGER NOT NULL,
         message TEXT NOT NULL,
         created_at TEXT NOT NULL,
@@ -97,6 +103,30 @@ class AdjacencyDatabase {
 
     try {
       this.db.exec('ALTER TABLE games ADD COLUMN single_player INTEGER NOT NULL DEFAULT 0;');
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes('duplicate column name')) {
+        throw error;
+      }
+    }
+
+    try {
+      this.db.exec("ALTER TABLE games ADD COLUMN word_length_rule TEXT NOT NULL DEFAULT 'standard';");
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes('duplicate column name')) {
+        throw error;
+      }
+    }
+
+    try {
+      this.db.exec("ALTER TABLE games ADD COLUMN area_bonus_rule TEXT NOT NULL DEFAULT 'none';");
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes('duplicate column name')) {
+        throw error;
+      }
+    }
+
+    try {
+      this.db.exec("ALTER TABLE game_turns ADD COLUMN rectangle_bonuses_json TEXT NOT NULL DEFAULT '[]';");
     } catch (error) {
       if (!(error instanceof Error) || !error.message.includes('duplicate column name')) {
         throw error;
@@ -123,13 +153,15 @@ class AdjacencyDatabase {
             final_turns_remaining,
             single_player,
             board_layout,
+            word_length_rule,
+            area_bonus_rule,
             next_tile_number,
             team_score,
             last_move_json,
             next_turn_number,
             created_at,
             updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           game.id,
           JSON.stringify(game.board),
@@ -140,6 +172,8 @@ class AdjacencyDatabase {
           game.finalTurnsRemaining,
           game.singlePlayer ? 1 : 0,
           game.boardLayout,
+          game.wordLengthRule,
+          game.areaBonusRule,
           game.nextTileNumber,
           game.teamScore,
           JSON.stringify(game.lastMove),
@@ -177,10 +211,11 @@ class AdjacencyDatabase {
               player_name,
               kind,
               words_json,
+              rectangle_bonuses_json,
               total_score,
               message,
               created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).run(
             game.id,
             turn.turn,
@@ -188,6 +223,7 @@ class AdjacencyDatabase {
             turn.playerName,
             turn.kind,
             JSON.stringify(turn.words),
+            JSON.stringify(turn.rectangleBonuses ?? []),
             turn.totalScore,
             turn.message,
             game.updatedAt,
@@ -214,6 +250,8 @@ class AdjacencyDatabase {
         final_turns_remaining,
         single_player,
         board_layout,
+        word_length_rule,
+        area_bonus_rule,
         next_tile_number,
         team_score,
         last_move_json,
@@ -232,6 +270,8 @@ class AdjacencyDatabase {
       final_turns_remaining: number | null;
       single_player: number;
       board_layout: BoardLayoutType;
+      word_length_rule: WordLengthRule;
+      area_bonus_rule: AreaBonusRule;
       next_tile_number: number;
       team_score: number;
       last_move_json: string | null;
@@ -254,7 +294,7 @@ class AdjacencyDatabase {
     }>;
 
     const turnRows = this.db.prepare(`
-      SELECT game_id, turn_number, player_id, player_name, kind, words_json, total_score, message
+      SELECT game_id, turn_number, player_id, player_name, kind, words_json, rectangle_bonuses_json, total_score, message
       FROM game_turns
       ORDER BY turn_number DESC
     `).all() as Array<{
@@ -264,6 +304,7 @@ class AdjacencyDatabase {
       player_name: string;
       kind: TurnHistoryEntryState['kind'];
       words_json: string;
+      rectangle_bonuses_json: string;
       total_score: number;
       message: string;
     }>;
@@ -278,15 +319,17 @@ class AdjacencyDatabase {
           claimToken: player.claim_token,
           name: player.player_name,
           seat: player.seat,
-          rack: JSON.parse(player.rack_json) as LetterTileState[],
+          rack: JSON.parse(player.rack_json) as RackTileState[],
         })),
       turnOrder: JSON.parse(row.turn_order_json) as string[],
       currentTurnIndex: row.current_turn_index,
-      bag: JSON.parse(row.bag_json) as Letter[],
+      bag: JSON.parse(row.bag_json) as BagTile[],
       gameEnded: Boolean(row.game_ended),
       finalTurnsRemaining: row.final_turns_remaining,
       singlePlayer: Boolean(row.single_player),
       boardLayout: row.board_layout,
+      wordLengthRule: row.word_length_rule,
+      areaBonusRule: row.area_bonus_rule,
       nextTileNumber: row.next_tile_number,
       teamScore: row.team_score,
       lastMove: row.last_move_json ? JSON.parse(row.last_move_json) as LastMoveState : null,
@@ -298,6 +341,7 @@ class AdjacencyDatabase {
           playerName: turn.player_name,
           kind: turn.kind,
           words: JSON.parse(turn.words_json) as TurnHistoryEntryState['words'],
+          rectangleBonuses: JSON.parse(turn.rectangle_bonuses_json) as TurnHistoryEntryState['rectangleBonuses'],
           totalScore: turn.total_score,
           message: turn.message,
         })),

@@ -10,12 +10,14 @@ import type {
   MovePreviewState,
   PreviewCellState,
   PreviewWordState,
+  RectangleBonusState,
   TileHolderState,
   TileState,
   WordBonusState,
   WordBuildKind,
   WordLetterScoreState,
 } from '../shared/states.ts';
+import { minimumWordLengthForRule, type AreaBonusRule, type WordLengthRule } from '../shared/ruleSets.ts';
 
 export const BOARD_COLS = 15;
 export const BOARD_ROWS = 15;
@@ -23,10 +25,18 @@ export const RACK_SIZE = 7;
 export const CENTER_COL = Math.floor(BOARD_COLS / 2);
 export const CENTER_ROW = Math.floor(BOARD_ROWS / 2);
 
-export type LetterTileState = TileState & { letter: Letter };
+export type LetterTileState = TileState & { letter: Letter; isBlank?: boolean };
+export type RackTileState = TileState & { letter: Letter | null; isBlank?: boolean };
 
 export type MoveValidationResult =
-  | { ok: true; newTiles: LetterTileState[]; words: string[]; score: number; wordRuns: PreviewWordState[] }
+  | {
+    ok: true;
+    newTiles: LetterTileState[];
+    words: string[];
+    score: number;
+    wordRuns: PreviewWordState[];
+    rectangleBonuses: RectangleBonusState[];
+  }
   | { ok: false; reason: string };
 
 type WordRun = {
@@ -34,12 +44,8 @@ type WordRun = {
   kind: WordBuildKind;
   word: string;
   cells: PreviewCellState[];
+  tiles: LetterTileState[];
   anchor: PreviewCellState;
-};
-
-type ClosedSquare = {
-  col: number;
-  row: number;
 };
 
 type ScoreBreakdown = {
@@ -50,13 +56,91 @@ type ScoreBreakdown = {
   score: number;
 };
 
+const IRREGULAR_DERIVED_BASES = new Map<string, string[]>([
+  ['ATE', ['EAT']],
+  ['EATEN', ['EAT']],
+  ['WENT', ['GO']],
+  ['GONE', ['GO']],
+  ['WAS', ['BE']],
+  ['WERE', ['BE']],
+  ['BEEN', ['BE']],
+  ['DID', ['DO']],
+  ['DONE', ['DO']],
+  ['HAD', ['HAVE']],
+  ['MADE', ['MAKE']],
+  ['CAME', ['COME']],
+  ['SAID', ['SAY']],
+  ['PAID', ['PAY']],
+  ['RAN', ['RUN']],
+  ['SAW', ['SEE']],
+  ['SEEN', ['SEE']],
+  ['TOOK', ['TAKE']],
+  ['TAKEN', ['TAKE']],
+  ['GAVE', ['GIVE']],
+  ['GIVEN', ['GIVE']],
+  ['WROTE', ['WRITE']],
+  ['WRITTEN', ['WRITE']],
+  ['DROVE', ['DRIVE']],
+  ['DRIVEN', ['DRIVE']],
+  ['RODE', ['RIDE']],
+  ['RIDDEN', ['RIDE']],
+  ['SPOKE', ['SPEAK']],
+  ['SPOKEN', ['SPEAK']],
+  ['BROKE', ['BREAK']],
+  ['BROKEN', ['BREAK']],
+  ['CHOSE', ['CHOOSE']],
+  ['CHOSEN', ['CHOOSE']],
+  ['STOLE', ['STEAL']],
+  ['STOLEN', ['STEAL']],
+  ['FELL', ['FALL']],
+  ['FALLEN', ['FALL']],
+  ['FOUND', ['FIND']],
+  ['LOST', ['LOSE']],
+  ['BOUGHT', ['BUY']],
+  ['BROUGHT', ['BRING']],
+  ['THOUGHT', ['THINK']],
+  ['TAUGHT', ['TEACH']],
+  ['CAUGHT', ['CATCH']],
+  ['KEPT', ['KEEP']],
+  ['SLEPT', ['SLEEP']],
+  ['LEFT', ['LEAVE']],
+  ['FELT', ['FEEL']],
+  ['HEARD', ['HEAR']],
+  ['MET', ['MEET']],
+  ['SOLD', ['SELL']],
+  ['TOLD', ['TELL']],
+  ['STOOD', ['STAND']],
+  ['UNDERSTOOD', ['UNDERSTAND']],
+  ['WON', ['WIN']],
+  ['WORE', ['WEAR']],
+  ['WORN', ['WEAR']],
+  ['DREW', ['DRAW']],
+  ['DRAWN', ['DRAW']],
+  ['FLEW', ['FLY']],
+  ['FLOWN', ['FLY']],
+  ['KNEW', ['KNOW']],
+  ['KNOWN', ['KNOW']],
+  ['GREW', ['GROW']],
+  ['GROWN', ['GROW']],
+  ['THREW', ['THROW']],
+  ['THROWN', ['THROW']],
+  ['BEGAN', ['BEGIN']],
+  ['BEGUN', ['BEGIN']],
+  ['DRANK', ['DRINK']],
+  ['DRUNK', ['DRINK']],
+  ['SANG', ['SING']],
+  ['SUNG', ['SING']],
+  ['SWAM', ['SWIM']],
+  ['SWUM', ['SWIM']],
+]);
+
 type AnalyzedMove = {
   newTiles: LetterTileState[];
   words: string[];
   score: number;
   wordRuns: PreviewWordState[];
+  rectangleBonuses: RectangleBonusState[];
   invalidWords: string[];
-  closedSquares: ClosedSquare[];
 };
 
 export function coordKey(col: number, row: number): string {
@@ -75,18 +159,28 @@ export function buildWordSet(rawWords: string | undefined): Set<string> {
 
 export function validateMove(
   committedBoard: Map<string, LetterTileState>,
-  playerRack: LetterTileState[],
+  playerRack: RackTileState[],
   submittedBoard: TileHolderState,
   allowedWords: Set<string>,
   boardLayout: BoardLayoutType = 'scrabble',
+  wordLengthRule: WordLengthRule = 'standard',
+  areaBonusRule: AreaBonusRule = 'none',
 ): MoveValidationResult {
-  const analyzedMove = analyzeMove(committedBoard, playerRack, submittedBoard, allowedWords, boardLayout);
+  const analyzedMove = analyzeMove(
+    committedBoard,
+    playerRack,
+    submittedBoard,
+    allowedWords,
+    boardLayout,
+    wordLengthRule,
+    areaBonusRule,
+  );
   if (!analyzedMove.ok) return analyzedMove;
 
-  if (analyzedMove.invalidWords.length > 0 || analyzedMove.closedSquares.length > 0) {
+  if (analyzedMove.invalidWords.length > 0) {
     return {
       ok: false,
-      reason: invalidMoveReason(analyzedMove.words, analyzedMove.invalidWords, analyzedMove.closedSquares),
+      reason: invalidMoveReason(analyzedMove.words, analyzedMove.invalidWords),
     };
   }
 
@@ -96,28 +190,40 @@ export function validateMove(
     words: analyzedMove.words,
     score: analyzedMove.score,
     wordRuns: analyzedMove.wordRuns,
+    rectangleBonuses: analyzedMove.rectangleBonuses,
   };
 }
 
 export function previewMove(
   committedBoard: Map<string, LetterTileState>,
-  playerRack: LetterTileState[],
+  playerRack: RackTileState[],
   submittedBoard: TileHolderState,
   allowedWords: Set<string>,
   boardLayout: BoardLayoutType = 'scrabble',
+  wordLengthRule: WordLengthRule = 'standard',
+  areaBonusRule: AreaBonusRule = 'none',
 ): MovePreviewState {
-  const analyzedMove = analyzeMove(committedBoard, playerRack, submittedBoard, allowedWords, boardLayout);
+  const analyzedMove = analyzeMove(
+    committedBoard,
+    playerRack,
+    submittedBoard,
+    allowedWords,
+    boardLayout,
+    wordLengthRule,
+    areaBonusRule,
+  );
   if (!analyzedMove.ok) {
-    return { valid: false, words: [], totalScore: 0, reason: analyzedMove.reason };
+    return { valid: false, words: [], rectangleBonuses: [], totalScore: 0, reason: analyzedMove.reason };
   }
 
-  const reason = analyzedMove.invalidWords.length > 0 || analyzedMove.closedSquares.length > 0
-    ? invalidMoveReason(analyzedMove.words, analyzedMove.invalidWords, analyzedMove.closedSquares)
+  const reason = analyzedMove.invalidWords.length > 0
+    ? invalidMoveReason(analyzedMove.words, analyzedMove.invalidWords)
     : null;
 
   return {
     valid: reason === null,
     words: analyzedMove.wordRuns,
+    rectangleBonuses: analyzedMove.rectangleBonuses,
     totalScore: analyzedMove.score,
     reason,
   };
@@ -125,10 +231,12 @@ export function previewMove(
 
 function analyzeMove(
   committedBoard: Map<string, LetterTileState>,
-  playerRack: LetterTileState[],
+  playerRack: RackTileState[],
   submittedBoard: TileHolderState,
   allowedWords: Set<string>,
   boardLayout: BoardLayoutType,
+  wordLengthRule: WordLengthRule,
+  areaBonusRule: AreaBonusRule,
 ): ({ ok: true } & AnalyzedMove) | { ok: false; reason: string } {
   const submittedTiles = normaliseSubmittedTiles(submittedBoard);
   if (!submittedTiles.ok) return submittedTiles;
@@ -144,6 +252,7 @@ function analyzeMove(
     }
     if (
       submittedTile.letter !== committedTile.letter ||
+      Boolean(submittedTile.isBlank) !== Boolean(committedTile.isBlank) ||
       submittedTile.col !== committedTile.col ||
       submittedTile.row !== committedTile.row
     ) {
@@ -159,7 +268,9 @@ function analyzeMove(
     if (!rackTile) {
       return { ok: false, reason: 'The move includes a tile that is not in your rack.' };
     }
-    if (rackTile.letter !== submittedTile.letter) {
+    if (rackTile.isBlank) {
+      submittedTile.isBlank = true;
+    } else if (rackTile.letter !== submittedTile.letter || submittedTile.isBlank) {
       return { ok: false, reason: 'Rack tile letters cannot be changed.' };
     }
     if (committedBoard.has(coordKey(submittedTile.col, submittedTile.row))) {
@@ -189,16 +300,20 @@ function analyzeMove(
   }
   const words = wordRuns.map((run) => run.word);
 
-  const invalidWords = words.filter((word) => !isWordAllowed(word, allowedWords));
-  const closedSquares = collectNewClosedSquares(committedBoard, proposedBoard);
-  const score = wordRuns.reduce((total, run) => total + run.score, 0);
+  const invalidWords = words.filter((word) => !isWordAllowed(word, allowedWords, wordLengthRule));
+  const rectangleBonuses = areaBonusRule === 'closed-rectangle-area'
+    ? collectClosedRectangleBonuses(committedBoard, proposedBoard, newTiles)
+    : [];
+  const wordScore = wordRuns.reduce((total, run) => total + run.score, 0);
+  const rectangleScore = rectangleBonuses.reduce((total, bonus) => total + bonus.score, 0);
+  const score = wordScore + rectangleScore;
   return {
     ok: true,
     newTiles,
     words,
     score,
+    rectangleBonuses,
     invalidWords,
-    closedSquares,
     wordRuns: wordRuns.map((run) => ({
       kind: run.kind,
       word: run.word,
@@ -242,10 +357,92 @@ function normaliseSubmittedTiles(
     }
     tileIds.add(tile.id);
 
-    tiles.push({ id: tile.id, letter: tile.letter, col: tile.col, row: tile.row });
+    tiles.push({ id: tile.id, letter: tile.letter, col: tile.col, row: tile.row, isBlank: Boolean(tile.isBlank) });
   }
 
   return { ok: true, tiles };
+}
+
+function collectClosedRectangleBonuses(
+  committedBoard: Map<string, LetterTileState>,
+  proposedBoard: Map<string, LetterTileState>,
+  newTiles: LetterTileState[],
+): RectangleBonusState[] {
+  const newTileKeys = new Set(newTiles.map((tile) => coordKey(tile.col, tile.row)));
+  const occupiedCells = [...proposedBoard.values()];
+  const cols = [...new Set(occupiedCells.map((tile) => tile.col))].sort((left, right) => left - right);
+  const rows = [...new Set(occupiedCells.map((tile) => tile.row))].sort((left, right) => left - right);
+  const bonuses: RectangleBonusState[] = [];
+
+  for (let leftIndex = 0; leftIndex < cols.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < cols.length; rightIndex += 1) {
+      const minCol = cols[leftIndex];
+      const maxCol = cols[rightIndex];
+      for (let topIndex = 0; topIndex < rows.length; topIndex += 1) {
+        for (let bottomIndex = topIndex + 1; bottomIndex < rows.length; bottomIndex += 1) {
+          const minRow = rows[topIndex];
+          const maxRow = rows[bottomIndex];
+          if (!rectanglePerimeterIsOccupied(proposedBoard, minCol, minRow, maxCol, maxRow)) continue;
+          if (rectanglePerimeterIsOccupied(committedBoard, minCol, minRow, maxCol, maxRow)) continue;
+          if (!rectanglePerimeterTouchesKeys(newTileKeys, minCol, minRow, maxCol, maxRow)) continue;
+
+          const width = maxCol - minCol + 1;
+          const height = maxRow - minRow + 1;
+          const area = width * height;
+          bonuses.push({
+            minCol,
+            minRow,
+            maxCol,
+            maxRow,
+            width,
+            height,
+            area,
+            score: area,
+          });
+        }
+      }
+    }
+  }
+
+  return bonuses.sort((left, right) => (
+    right.area - left.area ||
+    left.minRow - right.minRow ||
+    left.minCol - right.minCol ||
+    left.maxRow - right.maxRow ||
+    left.maxCol - right.maxCol
+  ));
+}
+
+function rectanglePerimeterIsOccupied(
+  board: Map<string, LetterTileState>,
+  minCol: number,
+  minRow: number,
+  maxCol: number,
+  maxRow: number,
+): boolean {
+  for (let col = minCol; col <= maxCol; col += 1) {
+    if (!board.has(coordKey(col, minRow)) || !board.has(coordKey(col, maxRow))) return false;
+  }
+  for (let row = minRow + 1; row < maxRow; row += 1) {
+    if (!board.has(coordKey(minCol, row)) || !board.has(coordKey(maxCol, row))) return false;
+  }
+  return true;
+}
+
+function rectanglePerimeterTouchesKeys(
+  keys: Set<string>,
+  minCol: number,
+  minRow: number,
+  maxCol: number,
+  maxRow: number,
+): boolean {
+  for (let col = minCol; col <= maxCol; col += 1) {
+    if (keys.has(coordKey(col, minRow)) || keys.has(coordKey(col, maxRow))) return true;
+  }
+  for (let row = minRow + 1; row < maxRow; row += 1) {
+    if (keys.has(coordKey(minCol, row)) || keys.has(coordKey(maxCol, row))) return true;
+  }
+  return false;
 }
 
 function validateLine(
@@ -364,6 +561,7 @@ function collectWordRun(
 
   const letters: Letter[] = [];
   const cells: PreviewCellState[] = [];
+  const tiles: LetterTileState[] = [];
   let endCol = startCol;
   let endRow = startRow;
   while (true) {
@@ -371,6 +569,7 @@ function collectWordRun(
     if (!tile) break;
     letters.push(tile.letter);
     cells.push({ col: endCol, row: endRow });
+    tiles.push(tile);
     endCol += deltaCol;
     endRow += deltaRow;
   }
@@ -381,6 +580,7 @@ function collectWordRun(
     kind: 'fresh',
     word: letters.join(''),
     cells,
+    tiles,
     anchor: wordAnchor(cells),
   };
 }
@@ -414,44 +614,9 @@ function classifyWordRun(
   return 'hook';
 }
 
-function collectNewClosedSquares(
-  committedBoard: Map<string, LetterTileState>,
-  proposedBoard: Map<string, LetterTileState>,
-): ClosedSquare[] {
-  const existingSquares = new Set(
-    collectClosedSquares(committedBoard).map((square) => coordKey(square.col, square.row)),
-  );
-
-  return collectClosedSquares(proposedBoard).filter(
-    (square) => !existingSquares.has(coordKey(square.col, square.row)),
-  );
-}
-
-function collectClosedSquares(board: Map<string, LetterTileState>): ClosedSquare[] {
-  const squares: ClosedSquare[] = [];
-
-  for (let row = 1; row < BOARD_ROWS - 1; row += 1) {
-    for (let col = 1; col < BOARD_COLS - 1; col += 1) {
-      if (board.has(coordKey(col, row))) continue;
-
-      if (
-        board.has(coordKey(col, row - 1)) &&
-        board.has(coordKey(col, row + 1)) &&
-        board.has(coordKey(col - 1, row)) &&
-        board.has(coordKey(col + 1, row))
-      ) {
-        squares.push({ col, row });
-      }
-    }
-  }
-
-  return squares;
-}
-
 function invalidMoveReason(
   words: string[],
   invalidWords: string[],
-  closedSquares: ClosedSquare[],
 ): string {
   const messages: string[] = [];
 
@@ -461,11 +626,6 @@ function invalidMoveReason(
   if (invalidWords.length > 0) {
     messages.push(`The dictionary rejects ${formatWordList(invalidWords)}.`);
   }
-  if (closedSquares.length > 0) {
-    messages.push(
-      `It creates ${closedSquares.length === 1 ? 'a closed square' : 'closed squares'} at ${formatClosedSquares(closedSquares)}.`,
-    );
-  }
 
   return messages.join(' ');
 }
@@ -474,15 +634,17 @@ function formatWordList(words: string[]): string {
   return words.map((word) => `"${word}"`).join(', ');
 }
 
-function formatClosedSquares(closedSquares: ClosedSquare[]): string {
-  return closedSquares.map((square) => `(${square.col},${square.row})`).join(', ');
-}
+function isWordAllowed(word: string, allowedWords: Set<string>, wordLengthRule: WordLengthRule): boolean {
+  if (word.length < minimumWordLengthForRule(wordLengthRule)) {
+    return false;
+  }
 
-function isWordAllowed(word: string, allowedWords: Set<string>): boolean {
   if (allowedWords.size === 0) {
     return /^[A-Z]{2,}$/.test(word);
   }
-  return allowedWords.has(word) || matchesRegularPlural(word, allowedWords);
+  return allowedWords.has(word) ||
+    matchesRegularPlural(word, allowedWords) ||
+    matchesDerivedWord(word, allowedWords);
 }
 
 function matchesRegularPlural(word: string, allowedWords: Set<string>): boolean {
@@ -534,6 +696,94 @@ function takesEsPlural(word: string): boolean {
   );
 }
 
+function matchesDerivedWord(word: string, allowedWords: Set<string>): boolean {
+  return derivedBaseCandidates(word).some((candidate) => allowedWords.has(candidate));
+}
+
+function derivedBaseCandidates(word: string): string[] {
+  const candidates = new Set<string>(IRREGULAR_DERIVED_BASES.get(word) ?? []);
+
+  addEdBaseCandidates(word, candidates);
+  addEnBaseCandidates(word, candidates);
+  addIngBaseCandidates(word, candidates);
+  addDerivationalSuffixBaseCandidates(word, candidates);
+
+  return [...candidates].filter((candidate) => candidate.length >= 2);
+}
+
+function addEdBaseCandidates(word: string, candidates: Set<string>): void {
+  if (!word.endsWith('ED') || word.length < 4) return;
+
+  const stem = word.slice(0, -2);
+  candidates.add(stem);
+  candidates.add(`${stem}E`);
+
+  if (stem.endsWith('I') && stem.length > 1) {
+    candidates.add(`${stem.slice(0, -1)}Y`);
+  }
+
+  if (hasDoubledFinalConsonant(stem)) {
+    candidates.add(stem.slice(0, -1));
+  }
+}
+
+function addEnBaseCandidates(word: string, candidates: Set<string>): void {
+  if (!word.endsWith('EN') || word.length < 4) return;
+
+  const stem = word.slice(0, -2);
+  candidates.add(stem);
+  candidates.add(`${stem}E`);
+
+  if (stem.endsWith('I') && stem.length > 1) {
+    candidates.add(`${stem.slice(0, -1)}Y`);
+  }
+
+  if (hasDoubledFinalConsonant(stem)) {
+    candidates.add(stem.slice(0, -1));
+  }
+}
+
+function addIngBaseCandidates(word: string, candidates: Set<string>): void {
+  if (!word.endsWith('ING') || word.length < 5) return;
+
+  const stem = word.slice(0, -3);
+  candidates.add(stem);
+  candidates.add(`${stem}E`);
+
+  if (stem.endsWith('Y') && stem.length > 1) {
+    candidates.add(`${stem.slice(0, -1)}IE`);
+  }
+
+  if (stem.endsWith('CK') && stem.length > 2) {
+    candidates.add(stem.slice(0, -1));
+  }
+
+  if (hasDoubledFinalConsonant(stem)) {
+    candidates.add(stem.slice(0, -1));
+  }
+}
+
+function addDerivationalSuffixBaseCandidates(word: string, candidates: Set<string>): void {
+  for (const suffix of ['ER', 'EST', 'LY', 'NESS', 'MENT', 'FUL', 'LESS', 'ABLE', 'IBLE', 'ISH']) {
+    if (!word.endsWith(suffix) || word.length <= suffix.length + 1) continue;
+    const stem = word.slice(0, -suffix.length);
+    candidates.add(stem);
+    candidates.add(`${stem}E`);
+    if (stem.endsWith('I') && stem.length > 1) {
+      candidates.add(`${stem.slice(0, -1)}Y`);
+    }
+    if (hasDoubledFinalConsonant(stem)) {
+      candidates.add(stem.slice(0, -1));
+    }
+  }
+}
+
+function hasDoubledFinalConsonant(word: string): boolean {
+  if (word.length < 2) return false;
+  const finalLetter = word.at(-1);
+  return finalLetter === word.at(-2) && finalLetter !== undefined && !'AEIOUY'.includes(finalLetter);
+}
+
 function wordAnchor(cells: PreviewCellState[]): PreviewCellState {
   return cells.reduce((anchor, cell) => {
     if (cell.row > anchor.row) return cell;
@@ -543,7 +793,7 @@ function wordAnchor(cells: PreviewCellState[]): PreviewCellState {
 }
 
 function scoreWordRun(
-  run: Pick<WordRun, 'word' | 'cells'>,
+  run: Pick<WordRun, 'word' | 'cells' | 'tiles'>,
   committedBoard: Map<string, LetterTileState>,
   boardLayout: BoardLayoutType,
 ) : ScoreBreakdown {
@@ -554,9 +804,11 @@ function scoreWordRun(
 
   for (let index = 0; index < run.cells.length; index += 1) {
     const cell = run.cells[index];
+    const tile = run.tiles[index];
     const letter = run.word[index] as Letter;
     const isNewTile = !committedBoard.has(coordKey(cell.col, cell.row));
-    const baseScore = LETTER_VALUES[letter];
+    const isBlank = Boolean(tile.isBlank);
+    const baseScore = isBlank ? 0 : LETTER_VALUES[letter];
     const letterMultiplier = isNewTile ? letterMultiplierAt(boardLayout, cell.col, cell.row) : 1;
     const premium = isNewTile ? premiumSquareAt(boardLayout, cell.col, cell.row) : 'normal';
     const tileScore = baseScore * letterMultiplier;
@@ -569,6 +821,7 @@ function scoreWordRun(
       appliedMultiplier: letterMultiplier,
       tileScore,
       isNewTile,
+      isBlank,
       premium,
     });
     if (isNewTile) {

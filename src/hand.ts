@@ -32,19 +32,55 @@ export class Hand {
   }
 
   addTile(tile : Tile) {
-    if (this.spaceIsEmpty(tile)) {
-      tile.tileHolder = this;
-      tile.handCol = tile.col;
-      tile.handRow = tile.row;
-      tile.el.classList.remove('preview-valid');
-      tile.el.classList.remove('selected-tile');
-      tile.el.classList.add('rack-tile');
-      this.tiles.push(tile);
-      this.el.appendChild(tile.el);
-      return true;
-    } else {
+    const occupyingTile = this.tiles.find((candidate) => (
+      candidate !== tile &&
+      candidate.col === tile.col &&
+      candidate.row === tile.row
+    ));
+
+    if (occupyingTile) {
+      const emptySlot = this.firstEmptySlot();
+      if (!emptySlot) {
+        return false;
+      }
+      const oldCoords = gridCoordsToTileHolderCoords(occupyingTile.col, occupyingTile.row, this);
+      occupyingTile.col = emptySlot.col;
+      occupyingTile.row = emptySlot.row;
+      occupyingTile.handCol = emptySlot.col;
+      occupyingTile.handRow = emptySlot.row;
+      const coords = gridCoordsToTileHolderCoords(occupyingTile.col, occupyingTile.row, this);
+      occupyingTile.el.style.left = coords.x + 'px';
+      occupyingTile.el.style.top = coords.y + 'px';
+      occupyingTile.animateBump(oldCoords.x - coords.x, oldCoords.y - coords.y);
+    }
+
+    if (!this.spaceIsEmpty(tile)) {
       return false;
     }
+
+    tile.tileHolder = this;
+    if (tile.isBlank) {
+      tile.setBlank();
+    }
+    tile.handCol = tile.col;
+    tile.handRow = tile.row;
+    tile.el.classList.remove('preview-valid');
+    tile.el.classList.remove('selected-tile');
+    tile.el.classList.add('rack-tile');
+    this.tiles.push(tile);
+    this.el.appendChild(tile.el);
+    return true;
+  }
+
+  firstEmptySlot(): { col: number; row: number } | null {
+    for (let row = 0; row < this.rows; row += 1) {
+      for (let col = 0; col < this.cols; col += 1) {
+        if (!this.tiles.some((tile) => tile.col === col && tile.row === row)) {
+          return { col, row };
+        }
+      }
+    }
+    return null;
   }
 
   removeTile(tile : Tile) {
@@ -73,6 +109,9 @@ export class Hand {
 
     for (const [index, tile] of orderedTiles.entries()) {
       tile.tileHolder = this;
+      if (tile.isBlank) {
+        tile.setBlank();
+      }
       tile.col = index;
       tile.row = 0;
       tile.handCol = index;
@@ -121,6 +160,7 @@ export class Hand {
         letter: tile.letter,
         col: tile.col,
         row: tile.row,
+        isBlank: tile.isBlank,
       })),
       name: "hand"
     };

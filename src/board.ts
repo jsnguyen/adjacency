@@ -73,6 +73,7 @@ export class Board {
         letter: tile.letter,
         col: tile.col,
         row: tile.row,
+        isBlank: tile.isBlank,
       })),
       name: "board"
     };

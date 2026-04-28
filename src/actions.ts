@@ -53,7 +53,7 @@ function actionIcon(label: string): string {
     case 'recall':
       return iconSvg('<path d="M9 7H4V2"/><path d="M4.8 7A6 6 0 1 1 4 12"/>');
     case 'shuffle':
-      return iconSvg('<path d="M3 5h2.3c1.2 0 2.2.6 2.9 1.6l3.6 5.2c.7 1 1.7 1.6 2.9 1.6H17"/><path d="M14 10l3 3-3 3"/><path d="M3 15h2.3c1.2 0 2.2-.6 2.9-1.6l.5-.8"/><path d="M14 2l3 3-3 3"/>');
+      return iconSvg('<rect x="4" y="4" width="12" height="12" rx="3"/><circle cx="7.4" cy="7.4" r="0.9" fill="currentColor" stroke="none"/><circle cx="12.6" cy="7.4" r="0.9" fill="currentColor" stroke="none"/><circle cx="10" cy="10" r="0.9" fill="currentColor" stroke="none"/><circle cx="7.4" cy="12.6" r="0.9" fill="currentColor" stroke="none"/><circle cx="12.6" cy="12.6" r="0.9" fill="currentColor" stroke="none"/>');
     case 'play':
       return iconSvg('<path d="M6 4l10 6-10 6V4z"/>');
     case 'exchange':

@@ -19,6 +19,15 @@
 
   <title>Adjacency</title>
 
+  <script>
+    try {
+      if (window.localStorage.getItem('adjacency_theme') === 'dark') {
+        document.documentElement.classList.add('theme-dark');
+      }
+    } catch {
+      // Ignore storage access issues.
+    }
+  </script>
   <link rel="stylesheet" href="src/style.css">
 
 </head>

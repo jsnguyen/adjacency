@@ -7,6 +7,7 @@ import { gridCoordsToTileHolderCoords } from './coordinates.ts'
 type TileOptions = {
   id?: string;
   letter?: Letter | null;
+  isBlank?: boolean;
   played?: boolean;
 };
 
@@ -25,6 +26,7 @@ export class Tile {
   el: HTMLElement;
   letter: Letter | null;
   value: number | null;
+  isBlank: boolean;
 
   constructor(col : number, row : number, tileHolder : Hand | Board, isBGTile : boolean = false, options: TileOptions = {}) {
     this.id = options.id ?? crypto.randomUUID();
@@ -41,6 +43,7 @@ export class Tile {
 
     this.letter = null;
     this.value = null;
+    this.isBlank = Boolean(options.isBlank);
 
     const tileDiv = document.createElement('div');
     if (isBGTile) {
@@ -64,8 +67,13 @@ export class Tile {
 
     this.el = tileDiv;
 
+    if (this.isBlank) {
+      tileDiv.classList.add('blank-tile');
+      this.setBlank();
+    }
+
     if (options.letter) {
-      this.setLetter(options.letter);
+      this.setLetter(options.letter, this.isBlank);
     }
 
     if (!isBGTile) {
@@ -78,23 +86,50 @@ export class Tile {
 
   }
 
-  setLetter(letter : Letter) {
+  setLetter(letter : Letter, isBlank = false) {
     this.letter = letter;
+    this.isBlank = isBlank;
+    this.el.classList.toggle('blank-tile', isBlank);
+    this.el.classList.toggle('blank-tile--assigned', isBlank && this.letter !== null);
     this.el.textContent = '';
     this.el.textContent = this.letter;
 
     const valueDiv = document.createElement('div');
     valueDiv.classList.add('tile-value');
-    valueDiv.textContent = String(LETTER_VALUES[letter]);
+    valueDiv.textContent = String(isBlank ? 0 : LETTER_VALUES[letter]);
     this.el.appendChild(valueDiv);
 
-    this.value = LETTER_VALUES[letter] || 0;
+    this.value = isBlank ? 0 : LETTER_VALUES[letter] || 0;
+  }
+
+  setBlank() {
+    this.letter = null;
+    this.isBlank = true;
+    this.value = 0;
+    this.el.classList.add('blank-tile');
+    this.el.classList.remove('blank-tile--assigned');
+    this.el.textContent = '';
+    const blankMark = document.createElement('div');
+    blankMark.classList.add('blank-tile-mark');
+    blankMark.textContent = '?';
+    const valueDiv = document.createElement('div');
+    valueDiv.classList.add('tile-value');
+    valueDiv.textContent = '0';
+    this.el.append(blankMark, valueDiv);
   }
 
   animatePlacement() {
     this.el.classList.remove('tile-drop');
     void this.el.offsetWidth;
     this.el.classList.add('tile-drop');
+  }
+
+  animateBump(deltaX: number, deltaY: number) {
+    this.el.classList.remove('tile-bump');
+    this.el.style.setProperty('--tile-bump-x', `${deltaX}px`);
+    this.el.style.setProperty('--tile-bump-y', `${deltaY}px`);
+    void this.el.offsetWidth;
+    this.el.classList.add('tile-bump');
   }
 
 }

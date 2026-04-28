@@ -5,19 +5,22 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
-import { TILE_DISTRIBUTION } from '../shared/letters.ts';
-import type { Letter } from '../shared/letters.ts';
+import { DEFAULT_BLANK_TILE_COUNT, TILE_DISTRIBUTION } from '../shared/letters.ts';
+import type { BagTile, Letter } from '../shared/letters.ts';
 import { isBoardLayoutType, type BoardLayoutType } from '../shared/boardBonuses.ts';
 import type { ClientMessage, ServerMessage } from '../shared/protocol.ts';
+import { isAreaBonusRule, isWordLengthRule, type AreaBonusRule, type WordLengthRule } from '../shared/ruleSets.ts';
 import type {
   GameState,
   GameSummaryState,
   LastMoveState,
   MovePreviewState,
   PlayerPublicState,
+  RectangleBonusState,
   TileHolderState,
   TurnHistoryEntryState,
   TurnWordScoreState,
+  TileState,
 } from '../shared/states.ts';
 import { loadDictionary } from './dictionary.ts';
 import {
@@ -28,7 +31,7 @@ import {
   previewMove,
   validateMove,
 } from './rules.ts';
-import type { LetterTileState } from './rules.ts';
+import type { LetterTileState, RackTileState } from './rules.ts';
 import {
   loadPersistedGames,
   savePersistedGames,
@@ -59,7 +62,7 @@ type Player = {
   name: string;
   seat: number;
   socket: LiveSocket | null;
-  rack: LetterTileState[];
+  rack: RackTileState[];
   connected: boolean;
 };
 
@@ -73,11 +76,13 @@ export class GameRoom {
   private players = new Map<string, Player>();
   private turnOrder: string[] = [];
   private currentTurnIndex = 0;
-  private bag: Letter[];
+  private bag: BagTile[];
   private gameEnded = false;
   private finalTurnsRemaining: number | null = null;
   private singlePlayer = false;
   private boardLayout: BoardLayoutType = 'scrabble';
+  private wordLengthRule: WordLengthRule = 'standard';
+  private areaBonusRule: AreaBonusRule = 'none';
   private nextTileNumber = 1;
   private teamScore = 0;
   private lastMove: LastMoveState = null;
@@ -188,7 +193,15 @@ export class GameRoom {
     if (!this.isReadyToPlay()) return 'Waiting for another player to claim the open seat.';
     if (this.currentPlayerId() !== playerId) return 'It is not your turn.';
 
-    const result = validateMove(this.board, player.rack, boardState, dictionary.words, this.boardLayout);
+    const result = validateMove(
+      this.board,
+      player.rack,
+      boardState,
+      dictionary.words,
+      this.boardLayout,
+      this.wordLengthRule,
+      this.areaBonusRule,
+    );
     if (!result.ok) return result.reason;
     const playedIds = new Set(result.newTiles.map((tile) => tile.id));
     const rackStateReason = validateSubmittedRack(player.rack, handState, playedIds);
@@ -202,18 +215,22 @@ export class GameRoom {
     this.drawRack(player);
     this.teamScore += result.score;
     const wordScores = buildWordScores(result.wordRuns);
+    const rectangleBonusScore = result.rectangleBonuses.reduce((total, bonus) => total + bonus.score, 0);
     this.lastMove = {
       playerId,
       playerName: player.name,
       words: result.words,
       score: result.score,
-      message: `Played ${result.words.join(', ')} for ${result.score} points.`,
+      message: rectangleBonusScore > 0
+        ? `Played ${result.words.join(', ')} for ${result.score} points including ${rectangleBonusScore} area bonus.`
+        : `Played ${result.words.join(', ')} for ${result.score} points.`,
     };
     this.recordTurn({
       playerId,
       playerName: player.name,
       kind: 'play',
       words: wordScores,
+      rectangleBonuses: result.rectangleBonuses,
       totalScore: result.score,
       message: this.lastMove.message,
     });
@@ -225,19 +242,33 @@ export class GameRoom {
   previewTurn(playerId: string, boardState: TileHolderState, handState: TileHolderState): MovePreviewState {
     const player = this.players.get(playerId);
     if (!player) {
-      return { valid: false, words: [], totalScore: 0, reason: 'Unknown player.' };
+      return { valid: false, words: [], rectangleBonuses: [], totalScore: 0, reason: 'Unknown player.' };
     }
     if (this.gameEnded) {
-      return { valid: false, words: [], totalScore: 0, reason: 'Game is over.' };
+      return { valid: false, words: [], rectangleBonuses: [], totalScore: 0, reason: 'Game is over.' };
     }
     if (!this.isReadyToPlay()) {
-      return { valid: false, words: [], totalScore: 0, reason: 'Waiting for another player to claim the open seat.' };
+      return {
+        valid: false,
+        words: [],
+        rectangleBonuses: [],
+        totalScore: 0,
+        reason: 'Waiting for another player to claim the open seat.',
+      };
     }
     if (this.currentPlayerId() !== playerId) {
-      return { valid: false, words: [], totalScore: 0, reason: 'It is not your turn.' };
+      return { valid: false, words: [], rectangleBonuses: [], totalScore: 0, reason: 'It is not your turn.' };
     }
 
-    const preview = previewMove(this.board, player.rack, boardState, dictionary.words, this.boardLayout);
+    const preview = previewMove(
+      this.board,
+      player.rack,
+      boardState,
+      dictionary.words,
+      this.boardLayout,
+      this.wordLengthRule,
+      this.areaBonusRule,
+    );
     if (preview.words.length === 0 && !preview.valid) {
       return preview;
     }
@@ -254,6 +285,7 @@ export class GameRoom {
       return {
         valid: false,
         words: preview.words,
+        rectangleBonuses: preview.rectangleBonuses,
         totalScore: preview.totalScore,
         reason: rackStateReason,
       };
@@ -280,6 +312,7 @@ export class GameRoom {
       playerName: this.players.get(playerId)?.name ?? 'Unknown',
       kind: 'pass',
       words: [],
+      rectangleBonuses: [],
       totalScore: 0,
       message: 'Passed.',
     });
@@ -306,7 +339,7 @@ export class GameRoom {
     }
 
     player.rack = player.rack.filter((tile) => !exchangeIds.has(tile.id));
-    this.bag.push(...exchanging.map((tile) => tile.letter));
+    this.bag.push(...exchanging.map((tile) => (tile.isBlank ? null : tile.letter)));
     shuffleInPlace(this.bag);
     player.rack.push(...this.drawTiles(uniqueTileIds.length));
     this.reindexRack(player);
@@ -323,6 +356,7 @@ export class GameRoom {
       playerName: player.name,
       kind: 'exchange',
       words: [],
+      rectangleBonuses: [],
       totalScore: 0,
       message: this.lastMove.message,
     });
@@ -336,6 +370,24 @@ export class GameRoom {
     if (!this.canChangeBoardLayout()) return 'Board layout can only change before the first turn.';
     if (this.boardLayout === layout) return null;
     this.boardLayout = layout;
+    this.markChanged();
+    return null;
+  }
+
+  setWordLengthRule(playerId: string, rule: WordLengthRule): string | null {
+    if (!this.players.has(playerId)) return 'Unknown player.';
+    if (!this.canChangeWordLengthRule()) return 'Word length rules can only change before the first turn.';
+    if (this.wordLengthRule === rule) return null;
+    this.wordLengthRule = rule;
+    this.markChanged();
+    return null;
+  }
+
+  setAreaBonusRule(playerId: string, rule: AreaBonusRule): string | null {
+    if (!this.players.has(playerId)) return 'Unknown player.';
+    if (!this.canChangeAreaBonusRule()) return 'Area bonus rules can only change before the first turn.';
+    if (this.areaBonusRule === rule) return null;
+    this.areaBonusRule = rule;
     this.markChanged();
     return null;
   }
@@ -431,6 +483,10 @@ export class GameRoom {
       gameEnded: this.gameEnded,
       singlePlayer: this.singlePlayer,
       canChangeSinglePlayer: this.canChangeSinglePlayer(),
+      wordLengthRule: this.wordLengthRule,
+      canChangeWordLengthRule: this.canChangeWordLengthRule(),
+      areaBonusRule: this.areaBonusRule,
+      canChangeAreaBonusRule: this.canChangeAreaBonusRule(),
       teamScore: this.teamScore,
       updatedAt: this.updatedAt,
     };
@@ -462,6 +518,10 @@ export class GameRoom {
       canChangeSinglePlayer: this.canChangeSinglePlayer(),
       boardLayout: this.boardLayout,
       canChangeBoardLayout: this.canChangeBoardLayout(),
+      wordLengthRule: this.wordLengthRule,
+      canChangeWordLengthRule: this.canChangeWordLengthRule(),
+      areaBonusRule: this.areaBonusRule,
+      canChangeAreaBonusRule: this.canChangeAreaBonusRule(),
       teamScore: this.teamScore,
       remainingTiles: this.bag.length,
       lastMove: this.lastMove,
@@ -487,6 +547,8 @@ export class GameRoom {
       finalTurnsRemaining: this.finalTurnsRemaining,
       singlePlayer: this.singlePlayer,
       boardLayout: this.boardLayout,
+      wordLengthRule: this.wordLengthRule,
+      areaBonusRule: this.areaBonusRule,
       nextTileNumber: this.nextTileNumber,
       teamScore: this.teamScore,
       lastMove: this.lastMove,
@@ -535,10 +597,25 @@ export class GameRoom {
     room.finalTurnsRemaining = state.finalTurnsRemaining ?? null;
     room.singlePlayer = state.singlePlayer ?? false;
     room.boardLayout = isBoardLayoutType(state.boardLayout) ? state.boardLayout : 'scrabble';
+    room.wordLengthRule = isWordLengthRule(state.wordLengthRule) ? state.wordLengthRule : 'standard';
+    room.areaBonusRule = isAreaBonusRule(state.areaBonusRule) ? state.areaBonusRule : 'none';
     room.nextTileNumber = normalizePositiveInteger(state.nextTileNumber, inferNextTileNumber(room));
-    room.teamScore = Number.isFinite(state.teamScore) ? state.teamScore : 0;
     room.lastMove = state.lastMove ?? null;
-    room.turnHistory = Array.isArray(state.turnHistory) ? [...state.turnHistory] : [];
+    const normalizedTurnHistory = Array.isArray(state.turnHistory)
+      ? normalizeTurnHistoryRectangleBonuses(state.turnHistory)
+      : { entries: [], scoreDelta: 0, latestPlayScoreDelta: 0 };
+    room.turnHistory = normalizedTurnHistory.entries;
+    room.teamScore = (Number.isFinite(state.teamScore) ? state.teamScore : 0) + normalizedTurnHistory.scoreDelta;
+    if (room.lastMove && normalizedTurnHistory.latestPlayScoreDelta !== 0) {
+      room.lastMove = {
+        ...room.lastMove,
+        score: room.lastMove.score + normalizedTurnHistory.latestPlayScoreDelta,
+        message: room.lastMove.message.replace(
+          /for \d+ points/,
+          `for ${room.lastMove.score + normalizedTurnHistory.latestPlayScoreDelta} points`,
+        ),
+      };
+    }
     room.nextTurnNumber = normalizePositiveInteger(
       state.nextTurnNumber,
       inferNextTurnNumber(room.turnHistory),
@@ -555,16 +632,17 @@ export class GameRoom {
     this.reindexRack(player);
   }
 
-  private drawTiles(count: number): LetterTileState[] {
-    const tiles: LetterTileState[] = [];
+  private drawTiles(count: number): RackTileState[] {
+    const tiles: RackTileState[] = [];
     for (let index = 0; index < count; index += 1) {
       const letter = this.bag.pop();
-      if (!letter) break;
+      if (letter === undefined) break;
       tiles.push({
         id: `tile-${this.nextTileNumber}`,
         letter,
         col: 0,
         row: 0,
+        isBlank: letter === null,
       });
       this.nextTileNumber += 1;
     }
@@ -593,6 +671,14 @@ export class GameRoom {
   }
 
   private canChangeBoardLayout(): boolean {
+    return this.board.size === 0 && this.turnHistory.every((entry) => entry.kind === 'reset');
+  }
+
+  private canChangeWordLengthRule(): boolean {
+    return this.board.size === 0 && this.turnHistory.every((entry) => entry.kind === 'reset');
+  }
+
+  private canChangeAreaBonusRule(): boolean {
     return this.board.size === 0 && this.turnHistory.every((entry) => entry.kind === 'reset');
   }
 
@@ -736,6 +822,24 @@ function handleMessage(socket: LiveSocket, msg: ClientMessage): void {
       }
       break;
     }
+    case 'set_word_length_rule': {
+      const reason = room.setWordLengthRule(playerId, msg.rule);
+      if (reason) {
+        rejectTurn(socket, reason);
+      } else {
+        room.broadcastState();
+      }
+      break;
+    }
+    case 'set_area_bonus_rule': {
+      const reason = room.setAreaBonusRule(playerId, msg.rule);
+      if (reason) {
+        rejectTurn(socket, reason);
+      } else {
+        room.broadcastState();
+      }
+      break;
+    }
     case 'set_single_player': {
       const reason = room.setSinglePlayer(playerId, msg.enabled);
       if (reason) {
@@ -757,12 +861,15 @@ function handleMessage(socket: LiveSocket, msg: ClientMessage): void {
   }
 }
 
-export function createBag(): Letter[] {
-  const letters: Letter[] = [];
+export function createBag(): BagTile[] {
+  const letters: BagTile[] = [];
   for (const [letter, count] of Object.entries(TILE_DISTRIBUTION) as [Letter, number][]) {
     for (let index = 0; index < count; index += 1) {
       letters.push(letter);
     }
+  }
+  for (let index = 0; index < DEFAULT_BLANK_TILE_COUNT; index += 1) {
+    letters.push(null);
   }
   return letters;
 }
@@ -779,7 +886,7 @@ function shuffleInPlace<T>(items: T[]): T[] {
   return items;
 }
 
-function sortTiles(a: LetterTileState, b: LetterTileState): number {
+function sortTiles(a: TileState, b: TileState): number {
   return a.row - b.row || a.col - b.col || a.id.localeCompare(b.id);
 }
 
@@ -804,12 +911,57 @@ function inferNextTurnNumber(turnHistory: TurnHistoryEntryState[]): number {
   return maxTurnNumber + 1;
 }
 
+function normalizeTurnHistoryRectangleBonuses(turnHistory: TurnHistoryEntryState[]): {
+  entries: TurnHistoryEntryState[];
+  scoreDelta: number;
+  latestPlayScoreDelta: number;
+} {
+  let scoreDelta = 0;
+  let latestPlayScoreDelta = 0;
+  let latestPlaySeen = false;
+  const entries = turnHistory.map((entry) => {
+    const rawBonuses = Array.isArray(entry.rectangleBonuses) ? entry.rectangleBonuses : [];
+    const normalizedBonuses = rawBonuses.map(normalizeRectangleBonus);
+    const entryDelta = normalizedBonuses.reduce((total, bonus, index) => (
+      total + bonus.score - (rawBonuses[index]?.score ?? 0)
+    ), 0);
+    scoreDelta += entryDelta;
+    if (!latestPlaySeen && entry.kind === 'play') {
+      latestPlaySeen = true;
+      latestPlayScoreDelta = entryDelta;
+    }
+    return {
+      ...entry,
+      rectangleBonuses: normalizedBonuses,
+      totalScore: entry.totalScore + entryDelta,
+    };
+  });
+  return { entries, scoreDelta, latestPlayScoreDelta };
+}
+
+function normalizeRectangleBonus(bonus: RectangleBonusState): RectangleBonusState {
+  const width = bonus.maxCol - bonus.minCol + 1;
+  const height = bonus.maxRow - bonus.minRow + 1;
+  if (bonus.width === width && bonus.height === height && bonus.area === width * height && bonus.score === width * height) {
+    return bonus;
+  }
+  const area = width * height;
+  return {
+    ...bonus,
+    width,
+    height,
+    area,
+    score: area,
+  };
+}
+
 function validateSubmittedRack(
-  playerRack: LetterTileState[],
+  playerRack: RackTileState[],
   handState: TileHolderState,
   playedIds: Set<string>,
 ): string | null {
-  const rackIds = new Set(playerRack.map((tile) => tile.id));
+  const rackById = new Map(playerRack.map((tile) => [tile.id, tile]));
+  const rackIds = new Set(rackById.keys());
   const handIds = new Set<string>();
 
   for (const tile of handState.tiles) {
@@ -818,6 +970,17 @@ function validateSubmittedRack(
     }
     if (!rackIds.has(tile.id)) {
       return 'The submitted hand contains a tile that is not in your rack.';
+    }
+    const rackTile = rackById.get(tile.id);
+    if (!rackTile) {
+      return 'The submitted hand contains a tile that is not in your rack.';
+    }
+    if (rackTile.isBlank) {
+      if (tile.letter !== null || !tile.isBlank) {
+        return 'Blank tiles must return to your rack as blanks.';
+      }
+    } else if (tile.letter !== rackTile.letter || tile.isBlank) {
+      return 'Rack tile letters cannot be changed.';
     }
     if (handIds.has(tile.id)) {
       return 'The submitted hand contains a duplicate tile id.';
@@ -1232,6 +1395,10 @@ function isClientMessage(value: unknown): value is ClientMessage {
       );
     case 'set_board_layout':
       return isBoardLayoutType(value.layout);
+    case 'set_word_length_rule':
+      return isWordLengthRule(value.rule);
+    case 'set_area_bonus_rule':
+      return isAreaBonusRule(value.rule);
     case 'set_single_player':
       return typeof value.enabled === 'boolean';
     case 'reset_game':
@@ -1255,10 +1422,15 @@ function isTileState(value: unknown): boolean {
   return (
     isRecord(value) &&
     typeof value.id === 'string' &&
-    (typeof value.letter === 'string' || value.letter === null) &&
+    (isLetterValue(value.letter) || value.letter === null) &&
+    (value.isBlank === undefined || typeof value.isBlank === 'boolean') &&
     Number.isInteger(value.col) &&
     Number.isInteger(value.row)
   );
+}
+
+function isLetterValue(value: unknown): value is Letter {
+  return typeof value === 'string' && value in TILE_DISTRIBUTION;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -27,12 +27,58 @@ function expectRejected(result: MoveValidationResult, reasonIncludes: string): v
   }
 }
 
+function letter(value: string): LetterTileState['letter'] {
+  return value as LetterTileState['letter'];
+}
+
+function extensionMove(baseWord: string, suffix: string, allowedWords: string): MoveValidationResult {
+  const row = 7;
+  const startCol = 7;
+  const committedTiles = [...baseWord].map((value, index) => (
+    tile(`${baseWord}-base-${index}`, letter(value), startCol + index, row)
+  ));
+  const rackTiles = [...suffix].map((value, index) => (
+    tile(`${baseWord}-${suffix}-${index}`, letter(value), index, 0)
+  ));
+  const playedTiles = rackTiles.map((candidate, index) => ({
+    ...candidate,
+    col: startCol + baseWord.length + index,
+    row,
+  }));
+
+  return validateMove(
+    committedBoard(committedTiles),
+    rackTiles,
+    board([...committedTiles, ...playedTiles]),
+    buildWordSet(allowedWords),
+  );
+}
+
+function freshWordMove(word: string, allowedWords: string): MoveValidationResult {
+  const row = 7;
+  const startCol = 7 - Math.floor(word.length / 2);
+  const rackTiles = [...word].map((value, index) => tile(`${word}-${index}`, letter(value), index, 0));
+  const playedTiles = rackTiles.map((candidate, index) => ({
+    ...candidate,
+    col: startCol + index,
+    row,
+  }));
+
+  return validateMove(new Map(), rackTiles, board(playedTiles), buildWordSet(allowedWords));
+}
+
 const rack = [
   tile('c', 'C', 0, 0),
   tile('a', 'A', 1, 0),
   tile('t', 'T', 2, 0),
   tile('s', 'S', 3, 0),
   tile('x', 'X', 4, 0),
+];
+
+const blankRack = [
+  { id: 'blank-c', letter: null, col: 0, row: 0, isBlank: true },
+  tile('blank-a', 'A', 1, 0),
+  tile('blank-t', 'T', 2, 0),
 ];
 
 const firstMove = validateMove(
@@ -69,6 +115,52 @@ assert.deepEqual(firstMove.wordRuns[0].cells, [
   { col: 9, row: 7 },
 ]);
 assert.deepEqual(firstMove.wordRuns[0].anchor, { col: 9, row: 7 });
+
+const blankTileMove = validateMove(
+  new Map(),
+  blankRack,
+  board([
+    { id: 'blank-c', letter: 'C', col: 7, row: 7, isBlank: true },
+    tile('blank-a', 'A', 8, 7),
+    tile('blank-t', 'T', 9, 7),
+  ]),
+  words,
+);
+expectOk(blankTileMove);
+assert.deepEqual(blankTileMove.words, ['CAT']);
+assert.equal(blankTileMove.score, 4);
+assert.deepEqual(
+  blankTileMove.wordRuns[0].letters.map((letterScore) => ({
+    letter: letterScore.letter,
+    baseScore: letterScore.baseScore,
+    isBlank: letterScore.isBlank,
+  })),
+  [
+    { letter: 'C', baseScore: 0, isBlank: true },
+    { letter: 'A', baseScore: 1, isBlank: false },
+    { letter: 'T', baseScore: 1, isBlank: false },
+  ],
+);
+
+const noTwoLetterWordsMove = validateMove(
+  new Map(),
+  [tile('a-no-two', 'A', 0, 0), tile('t-no-two', 'T', 1, 0)],
+  board([tile('a-no-two', 'A', 7, 7), tile('t-no-two', 'T', 8, 7)]),
+  buildWordSet('AT'),
+  'scrabble',
+  'no-two-letter-words',
+);
+expectRejected(noTwoLetterWordsMove, 'rejects "AT"');
+
+const noThreeLetterWordsMove = validateMove(
+  new Map(),
+  rack,
+  board([tile('c', 'C', 7, 7), tile('a', 'A', 8, 7), tile('t', 'T', 9, 7)]),
+  words,
+  'scrabble',
+  'no-three-letter-words',
+);
+expectRejected(noThreeLetterWordsMove, 'rejects "CAT"');
 
 const firstMoveWwf = validateMove(
   new Map(),
@@ -197,6 +289,63 @@ const inferredPluralMove = validateMove(
 );
 expectOk(inferredPluralMove);
 assert.deepEqual(inferredPluralMove.words, ['PLANS']);
+
+const inferredEsPluralMove = extensionMove('BOX', 'ES', 'BOX');
+expectOk(inferredEsPluralMove);
+assert.deepEqual(inferredEsPluralMove.words, ['BOXES']);
+assert.equal(inferredEsPluralMove.wordRuns[0].kind, 'extension');
+
+const pastTenseExtensionMove = extensionMove('TRACK', 'ED', 'TRACK');
+expectOk(pastTenseExtensionMove);
+assert.deepEqual(pastTenseExtensionMove.words, ['TRACKED']);
+assert.equal(pastTenseExtensionMove.wordRuns[0].kind, 'extension');
+
+const irregularPastParticipleExtensionMove = extensionMove('EAT', 'EN', 'EAT');
+expectOk(irregularPastParticipleExtensionMove);
+assert.deepEqual(irregularPastParticipleExtensionMove.words, ['EATEN']);
+assert.equal(irregularPastParticipleExtensionMove.wordRuns[0].kind, 'extension');
+
+const regularEnMove = extensionMove('DARK', 'EN', 'DARK');
+expectOk(regularEnMove);
+assert.deepEqual(regularEnMove.words, ['DARKEN']);
+assert.equal(regularEnMove.wordRuns[0].kind, 'extension');
+
+const inferredPastTenseMove = extensionMove('PLAY', 'ED', 'PLAY');
+expectOk(inferredPastTenseMove);
+assert.deepEqual(inferredPastTenseMove.words, ['PLAYED']);
+assert.equal(inferredPastTenseMove.wordRuns[0].kind, 'extension');
+
+const nearedMove = extensionMove('NEAR', 'ED', 'NEAR');
+expectOk(nearedMove);
+assert.deepEqual(nearedMove.words, ['NEARED']);
+
+const playingMove = extensionMove('PLAY', 'ING', 'PLAY');
+expectOk(playingMove);
+assert.deepEqual(playingMove.words, ['PLAYING']);
+
+const trackingMove = extensionMove('TRACK', 'ING', 'TRACK');
+expectOk(trackingMove);
+assert.deepEqual(trackingMove.words, ['TRACKING']);
+
+const doubledPastTenseMove = extensionMove('STOP', 'PED', 'STOP');
+expectOk(doubledPastTenseMove);
+assert.deepEqual(doubledPastTenseMove.words, ['STOPPED']);
+
+const droppedEMove = freshWordMove('MAKING', 'MAKE');
+expectOk(droppedEMove);
+assert.deepEqual(droppedEMove.words, ['MAKING']);
+
+const derivationalMove = freshWordMove('HAPPINESS', 'HAPPY');
+expectOk(derivationalMove);
+assert.deepEqual(derivationalMove.words, ['HAPPINESS']);
+
+const comparativeMove = extensionMove('NEAR', 'ER', 'NEAR');
+expectOk(comparativeMove);
+assert.deepEqual(comparativeMove.words, ['NEARER']);
+
+const superlativeMove = extensionMove('NEAR', 'EST', 'NEAR');
+expectOk(superlativeMove);
+assert.deepEqual(superlativeMove.words, ['NEAREST']);
 
 const inferredIesMove = validateMove(
   new Map(),
@@ -416,26 +565,107 @@ expectRejected(
   'gaps',
 );
 
-const closedSquareMove = validateMove(
+const closedSquareWordMove = validateMove(
   committedBoard([
-    tile('n', 'A', 8, 7),
-    tile('s', 'T', 8, 9),
-    tile('w', 'C', 7, 8),
-    tile('v1', 'C', 9, 7),
-    tile('v2', 'T', 9, 9),
+    tile('d', 'D', 6, 6),
+    tile('i', 'I', 7, 6),
+    tile('p', 'P', 8, 6),
+    tile('a', 'A', 6, 7),
+    tile('o', 'O', 8, 7),
   ]),
-  [tile('m', 'A', 0, 0)],
+  [
+    tile('l', 'L', 0, 0),
+    tile('e', 'E', 1, 0),
+    tile('t', 'T', 2, 0),
+  ],
   board([
-    tile('n', 'A', 8, 7),
-    tile('s', 'T', 8, 9),
-    tile('w', 'C', 7, 8),
-    tile('v1', 'C', 9, 7),
-    tile('v2', 'T', 9, 9),
-    tile('m', 'A', 9, 8),
+    tile('d', 'D', 6, 6),
+    tile('i', 'I', 7, 6),
+    tile('p', 'P', 8, 6),
+    tile('a', 'A', 6, 7),
+    tile('o', 'O', 8, 7),
+    tile('l', 'L', 6, 8),
+    tile('e', 'E', 7, 8),
+    tile('t', 'T', 8, 8),
   ]),
-  words,
+  buildWordSet('DIP DAL POT LET'),
 );
-expectRejected(closedSquareMove, 'closed square');
-expectRejected(closedSquareMove, '\\(8,8\\)');
+expectOk(closedSquareWordMove);
+assert.deepEqual(closedSquareWordMove.words, ['LET', 'DAL', 'POT']);
+assert.equal(closedSquareWordMove.rectangleBonuses.length, 0);
+
+const closedSquareAreaBonusMove = validateMove(
+  committedBoard([
+    tile('d', 'D', 6, 6),
+    tile('i', 'I', 7, 6),
+    tile('p', 'P', 8, 6),
+    tile('a', 'A', 6, 7),
+    tile('o', 'O', 8, 7),
+  ]),
+  [
+    tile('l', 'L', 0, 0),
+    tile('e', 'E', 1, 0),
+    tile('t', 'T', 2, 0),
+  ],
+  board([
+    tile('d', 'D', 6, 6),
+    tile('i', 'I', 7, 6),
+    tile('p', 'P', 8, 6),
+    tile('a', 'A', 6, 7),
+    tile('o', 'O', 8, 7),
+    tile('l', 'L', 6, 8),
+    tile('e', 'E', 7, 8),
+    tile('t', 'T', 8, 8),
+  ]),
+  buildWordSet('DIP DAL POT LET'),
+  'scrabble',
+  'standard',
+  'closed-rectangle-area',
+);
+expectOk(closedSquareAreaBonusMove);
+assert.deepEqual(closedSquareAreaBonusMove.rectangleBonuses, [{
+  minCol: 6,
+  minRow: 6,
+  maxCol: 8,
+  maxRow: 8,
+  width: 3,
+  height: 3,
+  area: 9,
+  score: 9,
+}]);
+assert.equal(closedSquareAreaBonusMove.score, closedSquareWordMove.score + 9);
+
+const alreadyClosedSquareMove = validateMove(
+  committedBoard([
+    tile('d', 'D', 6, 6),
+    tile('i', 'I', 7, 6),
+    tile('p', 'P', 8, 6),
+    tile('a', 'A', 6, 7),
+    tile('o', 'O', 8, 7),
+    tile('l', 'L', 6, 8),
+    tile('e', 'E', 7, 8),
+    tile('t', 'T', 8, 8),
+    tile('a2', 'A', 10, 10),
+  ]),
+  [tile('s2', 'S', 0, 0)],
+  board([
+    tile('d', 'D', 6, 6),
+    tile('i', 'I', 7, 6),
+    tile('p', 'P', 8, 6),
+    tile('a', 'A', 6, 7),
+    tile('o', 'O', 8, 7),
+    tile('l', 'L', 6, 8),
+    tile('e', 'E', 7, 8),
+    tile('t', 'T', 8, 8),
+    tile('a2', 'A', 10, 10),
+    tile('s2', 'S', 11, 10),
+  ]),
+  buildWordSet('AS'),
+  'scrabble',
+  'standard',
+  'closed-rectangle-area',
+);
+expectOk(alreadyClosedSquareMove);
+assert.equal(alreadyClosedSquareMove.rectangleBonuses.length, 0);
 
 console.log('Rule tests passed.');

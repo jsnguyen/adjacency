@@ -1,5 +1,6 @@
 import type { GameState, MovePreviewState, TileHolderState } from './states.ts';
 import type { BoardLayoutType } from './boardBonuses.ts';
+import type { AreaBonusRule, WordLengthRule } from './ruleSets.ts';
 
 export type ClientMessage =
   | { type: 'play_turn'; handState: TileHolderState; boardState: TileHolderState }
@@ -7,6 +8,8 @@ export type ClientMessage =
   | { type: 'pass_turn' }
   | { type: 'exchange_tiles'; tileIds: string[] }
   | { type: 'set_board_layout'; layout: BoardLayoutType }
+  | { type: 'set_word_length_rule'; rule: WordLengthRule }
+  | { type: 'set_area_bonus_rule'; rule: AreaBonusRule }
   | { type: 'set_single_player'; enabled: boolean }
   | { type: 'reset_game' };
 
